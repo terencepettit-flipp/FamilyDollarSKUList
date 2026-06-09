@@ -1,0 +1,517 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Flyer Blocks Export</title>
+</head>
+<body>
+<h1>Flyer Blocks Export</h1>
+
+<p>
+  <label>PDF ZIP: <input type="file" id="input-zip-pdf" accept=".zip,application/zip"></label><br>
+  <label>IDML ZIP: <input type="file" id="input-zip-idml" accept=".zip,application/zip"></label><br>
+  <label>Excel planning sheet: <input type="file" id="input-xls" accept=".xls,.xlsx"></label>
+</p>
+
+<p><button id="btn-generate" disabled>Generate Excel report</button></p>
+
+<div id="progress-wrap" style="display:none">
+  <p><strong>Progress</strong></p>
+  <pre id="log" style="max-height:300px;overflow-y:auto;background:#f4f4f4;padding:8px"></pre>
+</div>
+
+<div id="download-wrap" style="display:none">
+  <a id="btn-download" href="#" download>⬇ Download report</a>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.3.0/exceljs.min.js"></script>
+
+<script>
+'use strict';
+
+pdfjsLib.GlobalWorkerOptions.workerSrc =
+  'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+// ── tunables ──────────────────────────────────────────────────────────────────
+const RENDER_SCALE = 150 / 72;   // equivalent to 150 DPI
+const IMG_MAX_H    = 160;         // max pixel height of block thumbnails
+const CROP_PAD     = 0.05;        // 5% padding around each crop
+const SKU_RE       = /(?:^|\/)(\d{4,8})_/;
+
+// ── UI helpers ─────────────────────────────────────────────────────────────────
+const $id = id => document.getElementById(id);
+
+function log(msg) {
+  $id('log').textContent += msg + '\n';
+  $id('log').scrollTop = $id('log').scrollHeight;
+}
+
+function checkReady() {
+  $id('btn-generate').disabled =
+    !$id('input-zip-pdf').files[0] || !$id('input-zip-idml').files[0] || !$id('input-xls').files[0];
+}
+
+$id('input-zip-pdf').addEventListener('change', checkReady);
+$id('input-zip-idml').addEventListener('change', checkReady);
+$id('input-xls').addEventListener('change', checkReady);
+
+// ── XMP helpers for PDF↔IDML matching ────────────────────────────────────────
+function extractPdfDerivedFromId(bytes) {
+  const text = new TextDecoder('iso-8859-1').decode(new Uint8Array(bytes));
+  const start = text.indexOf('<?xpacket begin');
+  const end   = text.lastIndexOf('<?xpacket end');
+  if (start === -1 || end === -1) return null;
+  try {
+    const doc = new DOMParser().parseFromString(text.slice(start, end + 50), 'application/xml');
+    for (const el of doc.getElementsByTagName('*'))
+      if (el.localName === 'instanceID' && el.parentElement?.localName === 'DerivedFrom')
+        return el.textContent.trim();
+  } catch { }
+  return null;
+}
+
+async function extractIdmlInstanceId(bytes) {
+  try {
+    const inner = await JSZip.loadAsync(bytes);
+    const meta  = inner.files['META-INF/metadata.xml'];
+    if (!meta) return null;
+    const doc = new DOMParser().parseFromString(await meta.async('text'), 'application/xml');
+    for (const el of doc.getElementsByTagName('*'))
+      if (el.localName === 'InstanceID') return el.textContent.trim();
+  } catch { }
+  return null;
+}
+
+// ── geometry helpers ───────────────────────────────────────────────────────────
+const IDENTITY = [1, 0, 0, 1, 0, 0];
+
+function parseTransform(s) { return s.trim().split(/\s+/).map(Number); }
+
+function compose(t1, t2) {
+  const [a1,b1,c1,d1,e1,f1] = t1, [a2,b2,c2,d2,e2,f2] = t2;
+  return [a1*a2+c1*b2, b1*a2+d1*b2, a1*c2+c1*d2, b1*c2+d1*d2,
+          a1*e2+c1*f2+e1, b1*e2+d1*f2+f1];
+}
+
+function applyT(t, x, y) { return [t[0]*x+t[2]*y+t[4], t[1]*x+t[3]*y+t[5]]; }
+
+// ── IDML parsing ───────────────────────────────────────────────────────────────
+async function parseIdml(file) {
+  const zip    = await JSZip.loadAsync(file);
+  const names  = Object.keys(zip.files).filter(n => n.startsWith('Spreads/') && n.endsWith('.xml'));
+  if (!names.length) throw new Error('No Spreads/*.xml in IDML: ' + file.name);
+  const xml    = await zip.file(names[0]).async('text');
+  const doc    = new DOMParser().parseFromString(xml, 'application/xml');
+
+  // Root is a namespaced packaging wrapper; the actual Spread is its first child.
+  const root   = doc.documentElement;
+  const spread = root.tagName.includes(':') || root.namespaceURI
+    ? Array.from(root.children).find(c => c.tagName === 'Spread') || root
+    : root;
+
+  const spreadXform = parseTransform(spread.getAttribute('ItemTransform') || '1 0 0 1 0 0');
+  const page = Array.from(spread.children).find(c => c.tagName === 'Page');
+  if (!page) throw new Error('Page element not found in IDML: ' + file.name);
+
+  const pageXform = parseTransform(page.getAttribute('ItemTransform') || '1 0 0 1 0 0');
+  const fullPage  = compose(spreadXform, pageXform);
+  const gb        = parseTransform(page.getAttribute('GeometricBounds'));
+  const [py1,px1,py2,px2] = gb;
+  const corners   = [[px1,py1],[px2,py1],[px2,py2],[px1,py2]];
+  const pts       = corners.map(([x,y]) => applyT(fullPage, x, y));
+  const xs = pts.map(p=>p[0]), ys = pts.map(p=>p[1]);
+  const pageBox   = { x1:Math.min(...xs), y1:Math.min(...ys), x2:Math.max(...xs), y2:Math.max(...ys) };
+
+  // Build parent map
+  const parentMap = new Map();
+  (function buildParents(node) {
+    for (const c of node.children) { parentMap.set(c, node); buildParents(c); }
+  })(spread);
+
+  function firstChildByTag(node, tag) {
+    for (const c of node.children) if (c.tagName === tag) return c;
+    return null;
+  }
+
+  const rects = [];
+  for (const img of spread.getElementsByTagName('Image')) {
+    const link = img.querySelector('Link');
+    if (!link) continue;
+    const uri      = (link.getAttribute('LinkResourceURI') || '').replace(/\\/g, '/');
+    const filename = uri.split('/').pop();
+
+    let rect = parentMap.get(img);
+    while (rect && rect.tagName !== 'Rectangle') rect = parentMap.get(rect);
+    if (!rect) continue;
+
+    let xform = IDENTITY, cur = rect;
+    while (cur && cur.tagName !== 'Spread') {
+      const it = cur.getAttribute && cur.getAttribute('ItemTransform');
+      if (it) xform = compose(parseTransform(it), xform);
+      cur = parentMap.get(cur);
+    }
+    xform = compose(spreadXform, xform);
+
+    const props = firstChildByTag(rect, 'Properties'); if (!props) continue;
+    const pg    = firstChildByTag(props, 'PathGeometry'); if (!pg) continue;
+    const gpt   = firstChildByTag(pg, 'GeometryPathType'); if (!gpt) continue;
+    const ppa   = firstChildByTag(gpt, 'PathPointArray'); if (!ppa) continue;
+    const pps   = Array.from(ppa.children).filter(c => c.tagName === 'PathPointType').slice(0,4);
+    if (pps.length < 4) continue;
+
+    const local  = pps.map(pp => parseTransform(pp.getAttribute('Anchor')).slice(0,2));
+    const tformed = local.map(([x,y]) => applyT(xform, x, y));
+    const xs2 = tformed.map(p=>p[0]), ys2 = tformed.map(p=>p[1]);
+    rects.push({ filename, bbox: { x1:Math.min(...xs2), y1:Math.min(...ys2), x2:Math.max(...xs2), y2:Math.max(...ys2) } });
+  }
+
+  const onPage  = rects.filter(r => r.bbox.x2>pageBox.x1 && r.bbox.x1<pageBox.x2 && r.bbox.y2>pageBox.y1 && r.bbox.y1<pageBox.y2);
+  const offPage = rects.filter(r => !onPage.includes(r));
+  return { rects: onPage, offPageRects: offPage, pageBox,
+           pageWidth: pageBox.x2-pageBox.x1, pageHeight: pageBox.y2-pageBox.y1 };
+}
+
+// ── Excel parsing ──────────────────────────────────────────────────────────────
+function parseExcel(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = e => {
+      try {
+        const wb    = XLSX.read(e.target.result, { type: 'array' });
+        const sheet = wb.Sheets[wb.SheetNames[0]];
+        const rows  = XLSX.utils.sheet_to_json(sheet, { defval: null });
+        const blocks = [], skuToBlock = {};
+        for (const row of rows) {
+          const skus = [];
+          for (const line of String(row['Products'] || '').split(/\r?\n/)) {
+            const m = line.match(/^\s*(\d{4,8})\s*-\s*(.*)/);
+            if (m) skus.push({ sku: m[1].padStart(7,'0'), name: m[2].trim() });
+          }
+          const b = {
+            pageName:    String(row['Page Name'] ?? '').trim(),
+            blockNumber: row['Block #'],
+            promoName:   row['Promotion/Group Name'] || row['MM/Group Name'] || '',
+            skus,
+          };
+          blocks.push(b);
+          for (const s of skus) if (!skuToBlock[s.sku]) skuToBlock[s.sku] = b;
+        }
+        resolve({ blocks, skuToBlock });
+      } catch(err) { reject(err); }
+    };
+    reader.onerror = reject;
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+// ── Join ───────────────────────────────────────────────────────────────────────
+function joinIdmlExcel(idml, excel) {
+  const blockMap = new Map(), unmatched = [];
+
+  for (const r of idml.rects) {
+    const m = ('/' + r.filename).match(SKU_RE);
+    if (!m) { unmatched.push({...r, reason:'no SKU prefix'}); continue; }
+    const sku   = m[1].padStart(7, '0');
+    const block = excel.skuToBlock[sku];
+    if (!block) { unmatched.push({...r, sku, reason:'SKU not in Excel'}); continue; }
+    const key = `${block.pageName}-${block.blockNumber}`;
+    if (!blockMap.has(key)) blockMap.set(key, {block, frames:[]});
+    blockMap.get(key).frames.push({...r, sku});
+  }
+
+  const out = [];
+  for (const {block, frames} of blockMap.values()) {
+    const x1=Math.min(...frames.map(f=>f.bbox.x1)), y1=Math.min(...frames.map(f=>f.bbox.y1));
+    const x2=Math.max(...frames.map(f=>f.bbox.x2)), y2=Math.max(...frames.map(f=>f.bbox.y2));
+    out.push({ block, frames, isFullPage:false,
+               bboxPt:{ x:x1-idml.pageBox.x1, y:y1-idml.pageBox.y1, w:x2-x1, h:y2-y1 } });
+  }
+
+  // Pasteboard fallback
+  if (!out.length && idml.offPageRects?.length) {
+    const offMap = new Map();
+    for (const r of idml.offPageRects) {
+      const m = ('/' + r.filename).match(SKU_RE);
+      if (!m) continue;
+      const sku = m[1].padStart(7,'0'), block = excel.skuToBlock[sku];
+      if (!block) continue;
+      const key = `${block.pageName}-${block.blockNumber}`;
+      if (!offMap.has(key)) offMap.set(key, {block, frames:[]});
+      offMap.get(key).frames.push({...r, sku});
+    }
+    if (offMap.size) {
+      const allSkus = [], seen = new Set();
+      for (const {block} of offMap.values())
+        for (const s of block.skus)
+          if (!seen.has(s.sku)) { seen.add(s.sku); allSkus.push(s); }
+      out.push({ block:{pageName:'',blockNumber:'–',
+                        promoName:'(⚠ Full page - no individual blocks)', skus:allSkus},
+                 frames:[], isFullPage:true,
+                 bboxPt:{x:0, y:0, w:idml.pageWidth, h:idml.pageHeight} });
+    }
+  }
+
+  // Sort top-to-bottom, left-to-right
+  out.sort((a,b) => a.bboxPt.y - b.bboxPt.y || a.bboxPt.x - b.bboxPt.x);
+  return { blocks: out, unmatched };
+}
+
+// ── PDF rendering & cropping ───────────────────────────────────────────────────
+
+// Render page 1 of a PDF to a canvas. Returns {canvas, mbW, mbH, scale}.
+// Call this once per PDF file, then pass the result to cropFromCanvas for each block.
+async function renderPdfPage(pdfBytes) {
+  // Copy the buffer before handing it to PDF.js — the library transfers
+  // (detaches) the original ArrayBuffer, making it unusable for subsequent calls.
+  const copy     = pdfBytes.slice(0);
+  const pdf      = await pdfjsLib.getDocument({ data: new Uint8Array(copy) }).promise;
+  const page     = await pdf.getPage(1);
+  const mediaBox = page.view;
+  const mbW      = mediaBox[2] - mediaBox[0];
+  const mbH      = mediaBox[3] - mediaBox[1];
+  const scale    = RENDER_SCALE;
+  const viewport = page.getViewport({ scale });
+
+  const canvas  = document.createElement('canvas');
+  canvas.width  = viewport.width;
+  canvas.height = viewport.height;
+  await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+  return { canvas, mbW, mbH, scale };
+}
+
+// Crop a block region from an already-rendered page canvas.
+function cropFromCanvas(rendered, bboxPt, pageWidthPt, pageHeightPt) {
+  const { canvas, mbW, mbH, scale } = rendered;
+  const bleedX = (mbW - pageWidthPt)  / 2;
+  const bleedY = (mbH - pageHeightPt) / 2;
+
+  let xPt = bboxPt.x + bleedX, yPt = bboxPt.y + bleedY;
+  let wPt = bboxPt.w,           hPt = bboxPt.h;
+
+  // 5% padding
+  xPt -= wPt * CROP_PAD;  yPt -= hPt * CROP_PAD;
+  wPt *= 1 + CROP_PAD*2;  hPt *= 1 + CROP_PAD*2;
+
+  const left   = Math.max(0, Math.round(xPt * scale));
+  const top    = Math.max(0, Math.round(yPt * scale));
+  const right  = Math.min(canvas.width,  Math.round((xPt + wPt) * scale));
+  const bottom = Math.min(canvas.height, Math.round((yPt + hPt) * scale));
+
+  if (right <= left || bottom <= top) return canvas; // degenerate — return full page
+
+  const cropW = right - left, cropH = bottom - top;
+  const dest  = document.createElement('canvas');
+
+  // Resize to max height while preserving aspect ratio
+  const ratio  = cropH > IMG_MAX_H ? IMG_MAX_H / cropH : 1;
+  dest.width   = Math.round(cropW * ratio);
+  dest.height  = Math.round(cropH * ratio);
+  dest.getContext('2d').drawImage(canvas, left, top, cropW, cropH, 0, 0, dest.width, dest.height);
+  return dest;
+}
+
+function canvasToBase64(canvas) {
+  return canvas.toDataURL('image/png').split(',')[1];
+}
+
+// ── main ───────────────────────────────────────────────────────────────────────
+$id('btn-generate').addEventListener('click', async () => {
+  $id('btn-generate').disabled = true;
+  $id('progress-wrap').style.display = 'block';
+  $id('download-wrap').style.display = 'none';
+  $id('log').textContent = '';
+
+  const pdfZipFile  = $id('input-zip-pdf').files[0];
+  const idmlZipFile = $id('input-zip-idml').files[0];
+  const xlsFile     = $id('input-xls').files[0];
+  const outName     = pdfZipFile.name.replace(/\.zip$/i, '') + '_blocks.xlsx';
+
+  try {
+    // ── read both ZIPs ───────────────────────────────────────────────────────
+    log('Reading ZIPs…');
+
+    async function readZipEntries(file, extRe) {
+      const z = await JSZip.loadAsync(file);
+      const out = {};
+      for (const [path, entry] of Object.entries(z.files)) {
+        if (entry.dir || path.startsWith('__MACOSX/')) continue;
+        const name = path.replace(/\\/g, '/').split('/').pop();
+        if (extRe.test(name)) out[name] = entry;
+      }
+      return out;
+    }
+
+    const pdfEntries  = await readZipEntries(pdfZipFile,  /\.pdf$/i);
+    const idmlEntries = await readZipEntries(idmlZipFile, /\.idml$/i);
+    log(`  → ${Object.keys(pdfEntries).length} PDF(s), ${Object.keys(idmlEntries).length} IDML(s)`);
+
+    // ── pair by XMP, fall back to filename stem ──────────────────────────────
+    log('Matching PDFs to IDMLs…');
+
+    // Build instanceID → {name, bytes} for IDMLs
+    const idmlById = new Map(), idmlByStem = {};
+    for (const [name, entry] of Object.entries(idmlEntries)) {
+      const bytes = await entry.async('arraybuffer');
+      const id    = await extractIdmlInstanceId(bytes);
+      if (id) idmlById.set(id, { name, bytes });
+      idmlByStem[name.replace(/\.[^.]+$/, '').toLowerCase()] = { name, bytes };
+    }
+
+    const pairs = [], usedIdmlNames = new Set();
+    const pdfByName = {};
+    for (const [name, entry] of Object.entries(pdfEntries)) {
+      const bytes = await entry.async('arraybuffer');
+      pdfByName[name] = bytes;
+      const id   = extractPdfDerivedFromId(bytes);
+      const idml = id ? idmlById.get(id) : null;
+      if (idml) {
+        pairs.push({ pdfName: name, pdfBytes: bytes, idmlName: idml.name, idmlBytes: idml.bytes });
+        usedIdmlNames.add(idml.name);
+      }
+    }
+    // Filename-stem fallback for unmatched PDFs
+    for (const [name, bytes] of Object.entries(pdfByName)) {
+      if (pairs.some(p => p.pdfName === name)) continue;
+      const stem = name.replace(/\.[^.]+$/, '').toLowerCase();
+      const idml = idmlByStem[stem];
+      if (idml && !usedIdmlNames.has(idml.name)) {
+        pairs.push({ pdfName: name, pdfBytes: bytes, idmlName: idml.name, idmlBytes: idml.bytes });
+        usedIdmlNames.add(idml.name);
+      } else {
+        log(`  ⚠ no IDML match for: ${name}`);
+      }
+    }
+
+    pairs.sort((a, b) => a.pdfName.localeCompare(b.pdfName, undefined, { numeric: true, sensitivity: 'base' }));
+    log(`  → ${pairs.length} pair(s) matched`);
+
+    // ── parse Excel ─────────────────────────────────────────────────────────
+    log('Parsing Excel…');
+    const excel = await parseExcel(xlsFile);
+    log(`  → ${Object.keys(excel.skuToBlock).length} SKUs across ${excel.blocks.length} blocks`);
+
+    // ── build output workbook ────────────────────────────────────────────────
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Flyer Blocks');
+
+    ws.columns = [
+      { header: 'PDF File',         key: 'pdf',   width: 32 },
+      { header: 'Block Name',       key: 'name',  width: 44 },
+      { header: 'SKUs',             key: 'skus',  width: 60 },
+      { header: 'Block Screenshot', key: 'img',   width: 28 },
+    ];
+
+    // Style header row
+    const headerRow = ws.getRow(1);
+    headerRow.height = 20;
+    headerRow.eachCell(cell => {
+      cell.fill      = { type:'pattern', pattern:'solid', fgColor:{ argb:'FF003391' } };
+      cell.font      = { bold:true, color:{ argb:'FFFFFFFF' }, name:'Calibri' };
+      cell.alignment = { horizontal:'center', vertical:'middle' };
+    });
+
+    // ── process pages ────────────────────────────────────────────────────────
+    let dataRow = 2, totalBlocks = 0;
+    for (let pi = 0; pi < pairs.length; pi++) {
+      const pair = pairs[pi];
+      log(`[${pi+1}/${pairs.length}] ${pair.pdfName}`);
+
+      let idml;
+      try {
+        const idmlFile = new File([pair.idmlBytes], pair.idmlName);
+        idml = await parseIdml(idmlFile);
+      } catch(e) {
+        log(`  ✗ IDML error: ${e.message}`);
+        continue;
+      }
+
+      const joined = joinIdmlExcel(idml, excel);
+      log(`  → ${joined.blocks.length} block(s), ${joined.unmatched.length} unmatched`);
+
+      const pdfBytes = pair.pdfBytes;
+
+      // Render the PDF page once; reuse the canvas for every block crop.
+      let rendered = null;
+      try {
+        rendered = await renderPdfPage(pdfBytes);
+      } catch(e) {
+        log(`  ⚠ PDF render failed: ${e.message}`);
+      }
+
+      for (const blk of joined.blocks) {
+        const block   = blk.block;
+        const promo   = block.promoName || '';
+        const skuList = block.skus.map(s => 'FD' + parseInt(s.sku, 10)).join(',');
+
+        // Crop screenshot from the already-rendered page canvas
+        let cropCanvas = null;
+        try {
+          if (rendered) cropCanvas = cropFromCanvas(rendered, blk.bboxPt, idml.pageWidth, idml.pageHeight);
+        } catch(e) {
+          log(`  ⚠ crop failed (block ${block.blockNumber}): ${e.message}`);
+        }
+
+        // Write row cells
+        const row = ws.getRow(dataRow);
+        row.getCell(1).value = pair.pdfName;
+        row.getCell(2).value = promo;
+        row.getCell(3).value = skuList;
+        for (let ci = 1; ci <= 3; ci++) {
+          const cell = row.getCell(ci);
+          cell.font      = { name:'Calibri', size:10 };
+          cell.alignment = { horizontal:'left', vertical:'middle', wrapText:true };
+          cell.border    = {
+            top:   {style:'thin', color:{argb:'FFCCCCCC'}},
+            bottom:{style:'thin', color:{argb:'FFCCCCCC'}},
+            left:  {style:'thin', color:{argb:'FFCCCCCC'}},
+            right: {style:'thin', color:{argb:'FFCCCCCC'}},
+          };
+        }
+
+        // Embed screenshot
+        if (cropCanvas) {
+          const base64  = canvasToBase64(cropCanvas);
+          const imgId   = wb.addImage({ base64, extension:'png' });
+          const imgW    = cropCanvas.width;
+          const imgH    = cropCanvas.height;
+          ws.addImage(imgId, {
+            tl: { col: 3, row: dataRow - 1 },  // 0-based
+            ext: { width: imgW, height: imgH },
+          });
+          row.height = imgH * 0.75 + 6;  // px → points
+        } else {
+          row.height = 60;
+        }
+
+        dataRow++;
+        totalBlocks++;
+      }
+    }
+
+    // ── save and offer download ───────────────────────────────────────────────
+    log(`\nWriting ${totalBlocks} rows…`);
+    const buffer = await wb.xlsx.writeBuffer();
+    const blob   = new Blob([buffer], {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    });
+    const url = URL.createObjectURL(blob);
+    const dl  = $id('btn-download');
+    dl.href     = url;
+    dl.download = outName;
+    dl.textContent = `⬇ Download ${outName}`;
+    $id('download-wrap').style.display = 'block';
+    log(`Done — ${totalBlocks} block(s) exported.`);
+
+  } catch(err) {
+    log('Error: ' + (err.message || err));
+    console.error(err);
+  } finally {
+    $id('btn-generate').disabled = false;
+  }
+});
+</script>
+</body>
+</html>
