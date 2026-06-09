@@ -327,7 +327,7 @@ $id('btn-generate').addEventListener('click', async () => {
   const pdfZipFile  = $id('input-zip-pdf').files[0];
   const idmlZipFile = $id('input-zip-idml').files[0];
   const xlsFile     = $id('input-xls').files[0];
-  const outName     = pdfZipFile.name.replace(/\.zip$/i, '') + '_blocks.xlsx';
+  const outName     = pdfZipFile.name.replace(/\.zip$/i, '') + '_TaggingSheet.xlsx';
 
   try {
     // ── read both ZIPs ───────────────────────────────────────────────────────
