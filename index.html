@@ -2,18 +2,18 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Flyer Blocks Export</title>
+<title>FD Tagging Sheet Export</title>
 </head>
 <body>
 <h1>Flyer Blocks Export</h1>
 
 <p>
-  <label>PDF ZIP: <input type="file" id="input-zip-pdf" accept=".zip,application/zip"></label><br>
-  <label>IDML ZIP: <input type="file" id="input-zip-idml" accept=".zip,application/zip"></label><br>
-  <label>Excel planning sheet: <input type="file" id="input-xls" accept=".xls,.xlsx"></label>
+  <label>ZIP file containing flyer PDFs: <input type="file" id="input-zip-pdf" accept=".zip,application/zip"></label><br>
+  <label>ZIP file containing corresponding IDMLs: <input type="file" id="input-zip-idml" accept=".zip,application/zip"></label><br>
+  <label>Excel "summary view" sheet: <input type="file" id="input-xls" accept=".xls,.xlsx"></label>
 </p>
 
-<p><button id="btn-generate" disabled>Generate Excel report</button></p>
+<p><button id="btn-generate" disabled>Generate Excel Tagging Sheet</button></p>
 
 <div id="progress-wrap" style="display:none">
   <p><strong>Progress</strong></p>
@@ -21,7 +21,7 @@
 </div>
 
 <div id="download-wrap" style="display:none">
-  <a id="btn-download" href="#" download>⬇ Download report</a>
+  <a id="btn-download" href="#" download>⬇ Download sheet</a>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
