@@ -10,7 +10,7 @@
 <p>
   <label>ZIP file containing flyer PDFs: <input type="file" id="input-zip-pdf" accept=".zip,application/zip"></label><br><br>
   <label>ZIP file containing corresponding IDMLs: <input type="file" id="input-zip-idml" accept=".zip,application/zip"></label><br><br>
-  <label>Excel "summary view" sheet: <input type="file" id="input-xls" accept=".xls,.xlsx"></label><br>
+  <label>Excel "summary view" sheet(s): <input type="file" id="input-xls" accept=".xls,.xlsx" multiple></label><br>
 </p>
 
 <p><button id="btn-generate" disabled>Generate Excel Tagging Sheet</button></p>
@@ -51,7 +51,7 @@ function log(msg) {
 
 function checkReady() {
   $id('btn-generate').disabled =
-    !$id('input-zip-pdf').files[0] || !$id('input-zip-idml').files[0] || !$id('input-xls').files[0];
+    !$id('input-zip-pdf').files[0] || !$id('input-zip-idml').files[0] || !$id('input-xls').files.length;
 }
 
 $id('input-zip-pdf').addEventListener('change', checkReady);
@@ -207,6 +207,19 @@ function parseExcel(file) {
   });
 }
 
+// ── Merge multiple Excel files into one combined lookup ────────────────────────
+async function mergeExcels(files) {
+  const allBlocks = [], skuToBlock = {};
+  for (const file of files) {
+    const { blocks } = await parseExcel(file);
+    for (const b of blocks) {
+      allBlocks.push(b);
+      for (const s of b.skus) if (!skuToBlock[s.sku]) skuToBlock[s.sku] = b;
+    }
+  }
+  return { blocks: allBlocks, skuToBlock };
+}
+
 // ── Join ───────────────────────────────────────────────────────────────────────
 function joinIdmlExcel(idml, excel) {
   const blockMap = new Map(), unmatched = [];
@@ -326,8 +339,8 @@ $id('btn-generate').addEventListener('click', async () => {
 
   const pdfZipFile  = $id('input-zip-pdf').files[0];
   const idmlZipFile = $id('input-zip-idml').files[0];
-  const xlsFile     = $id('input-xls').files[0];
-  const outName     = pdfZipFile.name.replace(/\.zip$/i, '') + '_TaggingSheet.xlsx';
+  const xlsFiles    = Array.from($id('input-xls').files);
+  const outName     = pdfZipFile.name.replace(/\.zip$/i, '') + '_blocks.xlsx';
 
   try {
     // ── read both ZIPs ───────────────────────────────────────────────────────
@@ -373,6 +386,9 @@ $id('btn-generate').addEventListener('click', async () => {
       }
     }
     // Filename-stem fallback for unmatched PDFs
+    const stripVersion = s => s.replace(/_v\d+$/i, '');
+    const stripDate    = s => s.replace(/^\d{2}_\d{2}_/, '');
+    const normalize    = s => stripVersion(stripDate(s));
     for (const [name, bytes] of Object.entries(pdfByName)) {
       if (pairs.some(p => p.pdfName === name)) continue;
       const stem = name.replace(/\.[^.]+$/, '').toLowerCase();
@@ -381,16 +397,56 @@ $id('btn-generate').addEventListener('click', async () => {
         pairs.push({ pdfName: name, pdfBytes: bytes, idmlName: idml.name, idmlBytes: idml.bytes });
         usedIdmlNames.add(idml.name);
       } else {
-        log(`  ⚠ no IDML match for: ${name}`);
+        // Second pass: strip _V<n> version suffix and retry
+        const baseKey = stripVersion(stem);
+        const idmlVersionless = Object.entries(idmlByStem).find(
+          ([k, v]) => !usedIdmlNames.has(v.name) && stripVersion(k) === baseKey
+        );
+        if (idmlVersionless) {
+          const [, matchedIdml] = idmlVersionless;
+          log(`  Version-strip matched: ${name} ↔ ${matchedIdml.name}`);
+          pairs.push({ pdfName: name, pdfBytes: bytes, idmlName: matchedIdml.name, idmlBytes: matchedIdml.bytes });
+          usedIdmlNames.add(matchedIdml.name);
+        } else {
+          // Third pass: strip leading date prefix (MM_DD_) and version suffix, then retry
+          const normKey = normalize(stem);
+          const idmlDateless = Object.entries(idmlByStem).find(
+            ([k, v]) => !usedIdmlNames.has(v.name) && normalize(k) === normKey
+          );
+          if (idmlDateless) {
+            const [, matchedIdml] = idmlDateless;
+            log(`  Date-strip matched: ${name} ↔ ${matchedIdml.name}`);
+            pairs.push({ pdfName: name, pdfBytes: bytes, idmlName: matchedIdml.name, idmlBytes: matchedIdml.bytes });
+            usedIdmlNames.add(matchedIdml.name);
+          } else {
+            // Fourth pass: prefix match — one normalized stem is a prefix of the other
+            // (e.g. IDML "p1_digital insert_br" matches PDF "p1_digital insert_br_al_hr")
+            const prefixMatch = Object.entries(idmlByStem).find(([k, v]) => {
+              if (usedIdmlNames.has(v.name)) return false;
+              const a = normalize(k), b = normKey;
+              const [shorter, longer] = a.length <= b.length ? [a, b] : [b, a];
+              return longer.startsWith(shorter) && (longer.length === shorter.length || longer[shorter.length] === '_');
+            });
+            if (prefixMatch) {
+              const [, matchedIdml] = prefixMatch;
+              log(`  Prefix matched: ${name} ↔ ${matchedIdml.name}`);
+              pairs.push({ pdfName: name, pdfBytes: bytes, idmlName: matchedIdml.name, idmlBytes: matchedIdml.bytes });
+              // Note: same IDML may pair with multiple PDFs (e.g. multiple state variants);
+              // do NOT add to usedIdmlNames so subsequent PDFs can also match it.
+            } else {
+              log(`  ⚠ no IDML match for: ${name}`);
+            }
+          }
+        }
       }
     }
 
     pairs.sort((a, b) => a.pdfName.localeCompare(b.pdfName, undefined, { numeric: true, sensitivity: 'base' }));
     log(`  → ${pairs.length} pair(s) matched`);
 
-    // ── parse Excel ─────────────────────────────────────────────────────────
-    log('Parsing Excel…');
-    const excel = await parseExcel(xlsFile);
+    // ── parse Excel(s) ──────────────────────────────────────────────────────
+    log(`Parsing Excel (${xlsFiles.length} file${xlsFiles.length > 1 ? 's' : ''})…`);
+    const excel = await mergeExcels(xlsFiles);
     log(`  → ${Object.keys(excel.skuToBlock).length} SKUs across ${excel.blocks.length} blocks`);
 
     // ── build output workbook ────────────────────────────────────────────────
