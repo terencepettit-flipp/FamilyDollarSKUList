@@ -207,6 +207,58 @@ function parseExcel(file) {
   });
 }
 
+// ── FD-SKU list compression (lossless, Base64-encoded) ────────────────────────
+// Encodes a comma-separated list of FD-prefixed SKUs (e.g. "FD1234567,FD1234568")
+// into a compact Base64 string using delta + zigzag + unsigned LEB128 encoding.
+// Throws if any token violates the "FD" + exactly 7 digits invariant.
+function compressFdSkuList(inputString) {
+  if (!inputString) return '';
+  const tokens = inputString.split(',');
+  const PREFIX = 'FD', W = 7;
+
+  // Validate and parse
+  const nums = [];
+  for (const t of tokens) {
+    if (!t.startsWith(PREFIX))
+      throw new Error(`SKU compress: token "${t}" missing prefix "${PREFIX}"`);
+    const body = t.slice(PREFIX.length);
+    if (body.length !== W || !/^\d+$/.test(body))
+      throw new Error(`SKU compress: token "${t}" body must be exactly ${W} digits`);
+    nums.push(parseInt(body, 10));
+  }
+
+  const out = [];
+
+  function writeVarint(n) {           // unsigned LEB128
+    do {
+      let b = n & 0x7F;
+      n >>>= 7;
+      if (n !== 0) b |= 0x80;
+      out.push(b);
+    } while (n !== 0);
+  }
+
+  function zigzagEncode(n) { return n >= 0 ? n * 2 : (-n * 2 - 1); }
+
+  // Header
+  out.push(PREFIX.length);
+  for (let i = 0; i < PREFIX.length; i++) out.push(PREFIX.charCodeAt(i));
+  out.push(W);
+  writeVarint(nums.length);
+
+  // Body: first value, then zigzag-encoded deltas
+  if (nums.length > 0) {
+    writeVarint(nums[0]);
+    for (let i = 1; i < nums.length; i++)
+      writeVarint(zigzagEncode(nums[i] - nums[i - 1]));
+  }
+
+  // Base64-encode the byte array
+  let binary = '';
+  for (const b of out) binary += String.fromCharCode(b);
+  return btoa(binary);
+}
+
 // ── Merge multiple Excel files into one combined lookup ────────────────────────
 async function mergeExcels(files) {
   const allBlocks = [], skuToBlock = {};
@@ -500,7 +552,14 @@ $id('btn-generate').addEventListener('click', async () => {
       for (const blk of joined.blocks) {
         const block   = blk.block;
         const promo   = block.promoName || '';
-        const skuList = block.skus.map(s => 'FD' + parseInt(s.sku, 10)).join(',');
+        const skuListRaw = block.skus.map(s => 'FD' + String(parseInt(s.sku, 10)).padStart(7, '0')).join(',');
+        let skuList;
+        try {
+          skuList = compressFdSkuList(skuListRaw);
+        } catch(e) {
+          log(`  ⚠ SKU compression failed for block ${block.blockNumber}: ${e.message} — writing raw`);
+          skuList = skuListRaw;
+        }
 
         // Crop screenshot from the already-rendered page canvas
         let cropCanvas = null;
