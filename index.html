@@ -22,6 +22,8 @@
 
 <div id="pdf-selector" style="display:none"></div>
 
+<div id="manual-pair-wrap" style="display:none"></div>
+
 <p><button id="btn-generate" disabled>Generate Excel Tagging Sheet</button></p>
 
 <div id="progress-wrap" style="display:none">
@@ -64,6 +66,76 @@ function checkReady() {
   $id('btn-generate').disabled = !hasZip || !hasChecked;
 }
 
+// ── Manual pairing state ──────────────────────────────────────────────────────
+let unmatchedPdfNames  = [];        // PDFs with no auto filename-match
+let availableIdmlNames = [];        // all IDML filenames in current ZIP
+let manualPairs        = new Map(); // pdfName → idmlName
+
+// Lightweight filename-only pre-match: returns PDF names that don't match any IDML.
+function getUnmatchedByFilename(pdfNames, idmlNames) {
+  const stemOf   = n => n.replace(/\.[^.]+$/, '').toLowerCase();
+  const stripVer = s => s.replace(/_v\d+$/i, '');
+  const stripDt  = s => s.replace(/^\d{2}_\d{2}_/, '');
+  const norm     = s => stripVer(stripDt(s));
+  const normBeer = s => norm(s).replace(/_br_/gi, '_beer_').replace(/_br$/i, '_beer');
+  const idmlNorms = idmlNames.map(n => normBeer(stemOf(n)));
+  return pdfNames.filter(pdf => {
+    const pn = normBeer(stemOf(pdf));
+    return !idmlNorms.some(idn => {
+      const [s, l] = pn.length <= idn.length ? [pn, idn] : [idn, pn];
+      return l.startsWith(s) && (l.length === s.length || l[s.length] === '_');
+    });
+  });
+}
+
+function renderManualPairUI() {
+  const wrap = $id('manual-pair-wrap');
+  if (!unmatchedPdfNames.length) { wrap.style.display = 'none'; return; }
+  wrap.innerHTML = '';
+  wrap.style.display = 'block';
+
+  const hdr = document.createElement('p');
+  hdr.innerHTML = `<strong>&#9888; ${unmatchedPdfNames.length} PDF(s) could not be matched automatically &mdash; assign each an IDML (optional):</strong>`;
+  wrap.appendChild(hdr);
+
+  const table = document.createElement('table');
+  table.style.cssText = 'border-collapse:collapse; margin-bottom:8px';
+  for (const name of unmatchedPdfNames) {
+    const tr = document.createElement('tr');
+
+    // PDF name cell
+    const tdName = document.createElement('td');
+    tdName.style.cssText = 'padding:3px 10px 3px 0; white-space:nowrap';
+    tdName.textContent = name;
+    tr.appendChild(tdName);
+
+    // IDML dropdown cell
+    const tdSel = document.createElement('td');
+    tdSel.style.padding = '3px 6px 3px 0';
+    const sel = document.createElement('select');
+    sel.style.maxWidth = '320px';
+    const defOpt = document.createElement('option');
+    defOpt.value = ''; defOpt.textContent = '\u2014 no pairing \u2014';
+    sel.appendChild(defOpt);
+    for (const n of availableIdmlNames) {
+      const opt = document.createElement('option');
+      opt.value = n; opt.textContent = n;
+      if (manualPairs.get(name) === n) opt.selected = true;
+      sel.appendChild(opt);
+    }
+    sel.addEventListener('change', () => {
+      if (sel.value) manualPairs.set(name, sel.value);
+      else           manualPairs.delete(name);
+      checkReady();
+    });
+    tdSel.appendChild(sel);
+    tr.appendChild(tdSel);
+
+    table.appendChild(tr);
+  }
+  wrap.appendChild(table);
+}
+
 $id('input-master-zip').addEventListener('change', async () => {
   const file = $id('input-master-zip').files[0];
   const wrap = $id('pdf-selector');
@@ -100,6 +172,16 @@ $id('input-master-zip').addEventListener('change', async () => {
       wrap.appendChild(lbl);
     }
     wrap.style.display = 'block';
+
+    // Identify unmatched PDFs by filename and render manual pairing UI
+    availableIdmlNames = Object.keys(z.files)
+      .filter(p => !z.files[p].dir && !p.startsWith('__MACOSX/'))
+      .map(p => p.replace(/\\/g, '/').split('/').pop())
+      .filter(n => /\.idml$/i.test(n) && !n.startsWith('.'))
+      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
+    unmatchedPdfNames = getUnmatchedByFilename(pdfNames, availableIdmlNames);
+    manualPairs = new Map();
+    renderManualPairUI();
   } catch(e) {
     console.error('PDF list error:', e);
   }
@@ -533,6 +615,24 @@ $id('btn-generate').addEventListener('click', async () => {
       }
     }
 
+    // Apply manual pairings for any PDFs still unmatched
+    if (manualPairs.size) {
+      const idmlByName = {};
+      for (const v of Object.values(idmlByStem)) idmlByName[v.name] = v;
+      for (const [pdfName, idmlName] of manualPairs) {
+        if (pairs.some(p => p.pdfName === pdfName)) continue; // already matched
+        const pdfEntry  = pdfEntries[pdfName];
+        const idmlEntry = idmlByName[idmlName];
+        if (!pdfEntry || !idmlEntry) {
+          log(`  ⚠ Manual pair skipped (file not found): ${pdfName} → ${idmlName}`);
+          continue;
+        }
+        const pdfBytes  = await pdfEntry.async('arraybuffer');
+        pairs.push({ pdfName, pdfBytes, idmlName: idmlEntry.name, idmlBytes: idmlEntry.bytes });
+        log(`  Manual pair applied: ${pdfName} → ${idmlName}`);
+      }
+    }
+
     pairs.sort((a, b) => a.pdfName.localeCompare(b.pdfName, undefined, { numeric: true, sensitivity: 'base' }));
     const selectedPdfs = new Set(
       Array.from($id('pdf-selector').querySelectorAll('input[type=checkbox]:checked')).map(c => c.value)
@@ -552,7 +652,7 @@ $id('btn-generate').addEventListener('click', async () => {
     ws.columns = [
       { header: 'PDF File',         key: 'pdf',   width: 32 },
       { header: 'Block Name',       key: 'name',  width: 44 },
-      { header: 'SKUs',             key: 'skus',  width: 60 },
+      { header: 'Block ID',         key: 'skus',  width: 60 },
       { header: 'Block Screenshot', key: 'img',   width: 28 },
     ];
 
@@ -565,8 +665,10 @@ $id('btn-generate').addEventListener('click', async () => {
       cell.alignment = { horizontal:'center', vertical:'middle' };
     });
 
-    // ── process pages ────────────────────────────────────────────────────────
-    let dataRow = 2, totalBlocks = 0;
+    // ── pass 1: collect all blocks, deduplicating by SKU list ───────────────
+    // Blocks with identical SKU sets (same product, different regional PDFs)
+    // are merged into one entry; all PDF names are recorded.
+    const blockMap = new Map(); // skuListRaw → { block, skuList, pdfNames, cropCanvas }
     for (let pi = 0; pi < filteredPairs.length; pi++) {
       const pair = filteredPairs[pi];
       log(`[${pi+1}/${filteredPairs.length}] ${pair.pdfName}`);
@@ -583,19 +685,15 @@ $id('btn-generate').addEventListener('click', async () => {
       const joined = joinIdmlExcel(idml, excel);
       log(`  → ${joined.blocks.length} block(s), ${joined.unmatched.length} unmatched`);
 
-      const pdfBytes = pair.pdfBytes;
-
-      // Render the PDF page once; reuse the canvas for every block crop.
       let rendered = null;
       try {
-        rendered = await renderPdfPage(pdfBytes);
+        rendered = await renderPdfPage(pair.pdfBytes);
       } catch(e) {
         log(`  ⚠ PDF render failed: ${e.message}`);
       }
 
       for (const blk of joined.blocks) {
-        const block   = blk.block;
-        const promo   = block.promoName || '';
+        const block      = blk.block;
         const skuListRaw = block.skus.map(s => 'FD' + String(parseInt(s.sku, 10)).padStart(7, '0')).join(',');
         let skuList;
         try {
@@ -611,53 +709,66 @@ $id('btn-generate').addEventListener('click', async () => {
           continue;
         }
 
-        // Crop screenshot from the already-rendered page canvas
-        let cropCanvas = null;
-        try {
-          if (rendered) cropCanvas = cropFromCanvas(rendered, blk.bboxPt, idml.pageWidth, idml.pageHeight);
-        } catch(e) {
-          log(`  ⚠ crop failed (block ${block.blockNumber}): ${e.message}`);
-        }
-
-        // Write row cells
-        const row = ws.getRow(dataRow);
-        row.getCell(1).value = pair.pdfName;
-        row.getCell(2).value = promo;
-        row.getCell(3).value = skuList;
-        for (let ci = 1; ci <= 3; ci++) {
-          const cell = row.getCell(ci);
-          cell.font      = { name:'Calibri', size:10 };
-          cell.alignment = { horizontal:'left', vertical:'middle', wrapText:true };
-          cell.border    = {
-            top:   {style:'thin', color:{argb:'FFCCCCCC'}},
-            bottom:{style:'thin', color:{argb:'FFCCCCCC'}},
-            left:  {style:'thin', color:{argb:'FFCCCCCC'}},
-            right: {style:'thin', color:{argb:'FFCCCCCC'}},
-          };
-        }
-
-        // Embed screenshot
-        if (cropCanvas) {
-          const base64  = canvasToBase64(cropCanvas);
-          const imgId   = wb.addImage({ base64, extension:'png' });
-          const imgW    = cropCanvas.width;
-          const imgH    = cropCanvas.height;
-          ws.addImage(imgId, {
-            tl: { col: 3, row: dataRow - 1 },  // 0-based
-            ext: { width: imgW, height: imgH },
-          });
-          row.height = imgH * 0.75 + 6;  // px → points
+        if (blockMap.has(skuListRaw)) {
+          // Already seen — just add this PDF to the list
+          blockMap.get(skuListRaw).pdfNames.push(pair.pdfName);
+          log(`  ↳ Merged duplicate into existing block (${block.promoName || skuListRaw.slice(0,30)})`);
         } else {
-          row.height = 60;
+          // First occurrence — capture screenshot from this PDF
+          let cropCanvas = null;
+          try {
+            if (rendered) cropCanvas = cropFromCanvas(rendered, blk.bboxPt, idml.pageWidth, idml.pageHeight);
+          } catch(e) {
+            log(`  ⚠ crop failed (block ${block.blockNumber}): ${e.message}`);
+          }
+          blockMap.set(skuListRaw, { block, skuList, pdfNames: [pair.pdfName], cropCanvas });
         }
-
-        dataRow++;
-        totalBlocks++;
       }
     }
 
+    // ── pass 2: write one row per unique block ────────────────────────────────
+    let dataRow = 2, totalBlocks = 0;
+    for (const { block, skuList, pdfNames, cropCanvas } of blockMap.values()) {
+      const promo = block.promoName || '';
+
+      // Write row cells
+      const row = ws.getRow(dataRow);
+      row.getCell(1).value = pdfNames.join('\n');
+      row.getCell(2).value = promo;
+      row.getCell(3).value = skuList;
+      for (let ci = 1; ci <= 3; ci++) {
+        const cell = row.getCell(ci);
+        cell.font      = { name:'Calibri', size:10 };
+        cell.alignment = { horizontal:'left', vertical:'middle', wrapText:true };
+        cell.border    = {
+          top:   {style:'thin', color:{argb:'FFCCCCCC'}},
+          bottom:{style:'thin', color:{argb:'FFCCCCCC'}},
+          left:  {style:'thin', color:{argb:'FFCCCCCC'}},
+          right: {style:'thin', color:{argb:'FFCCCCCC'}},
+        };
+      }
+
+      // Embed screenshot
+      if (cropCanvas) {
+        const base64  = canvasToBase64(cropCanvas);
+        const imgId   = wb.addImage({ base64, extension:'png' });
+        const imgW    = cropCanvas.width;
+        const imgH    = cropCanvas.height;
+        ws.addImage(imgId, {
+          tl: { col: 3, row: dataRow - 1 },  // 0-based
+          ext: { width: imgW, height: imgH },
+        });
+        row.height = imgH * 0.75 + 6;  // px → points
+      } else {
+        row.height = 60;
+      }
+
+      dataRow++;
+      totalBlocks++;
+    }
+
     // ── save and offer download ───────────────────────────────────────────────
-    log(`\nWriting ${totalBlocks} rows…`);
+    log(`\nWriting ${totalBlocks} unique block(s) (deduplicated from ${filteredPairs.length} PDF(s))…`);
     const buffer = await wb.xlsx.writeBuffer();
     const blob   = new Blob([buffer], {
       type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
