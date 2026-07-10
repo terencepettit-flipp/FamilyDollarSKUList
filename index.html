@@ -8,10 +8,19 @@
 <h1>Family Dollar Tagging Sheet Export</h1>
 
 <p>
-  <label>ZIP file containing flyer PDFs: <input type="file" id="input-zip-pdf" accept=".zip,application/zip"></label><br><br>
-  <label>ZIP file containing corresponding IDMLs: <input type="file" id="input-zip-idml" accept=".zip,application/zip"></label><br><br>
-  <label>Excel "summary view" sheet(s): <input type="file" id="input-xls" accept=".xls,.xlsx" multiple></label><br>
+  <label>Master ZIP (PDFs, IDMLs, and Excel summary file(s) — any folder structure):
+    <input type="file" id="input-master-zip" accept=".zip,application/zip">
+  </label>
 </p>
+
+<p>
+  <label>
+    <input type="checkbox" id="chk-keep-long-skus" checked>
+    Keep blocks whose compressed SKU list exceeds 255 characters
+  </label>
+</p>
+
+<div id="pdf-selector" style="display:none"></div>
 
 <p><button id="btn-generate" disabled>Generate Excel Tagging Sheet</button></p>
 
@@ -50,13 +59,52 @@ function log(msg) {
 }
 
 function checkReady() {
-  $id('btn-generate').disabled =
-    !$id('input-zip-pdf').files[0] || !$id('input-zip-idml').files[0] || !$id('input-xls').files.length;
+  const hasZip     = !!$id('input-master-zip').files[0];
+  const hasChecked = $id('pdf-selector').querySelectorAll('input[type=checkbox]:checked').length > 0;
+  $id('btn-generate').disabled = !hasZip || !hasChecked;
 }
 
-$id('input-zip-pdf').addEventListener('change', checkReady);
-$id('input-zip-idml').addEventListener('change', checkReady);
-$id('input-xls').addEventListener('change', checkReady);
+$id('input-master-zip').addEventListener('change', async () => {
+  const file = $id('input-master-zip').files[0];
+  const wrap = $id('pdf-selector');
+  if (!file) { wrap.style.display = 'none'; wrap.innerHTML = ''; checkReady(); return; }
+  try {
+    const z = await JSZip.loadAsync(file);
+    const pdfNames = Object.keys(z.files)
+      .filter(p => !z.files[p].dir && !p.startsWith('__MACOSX/'))
+      .map(p => p.replace(/\\/g, '/').split('/').pop())
+      .filter(n => /\.pdf$/i.test(n) && !n.startsWith('.'))
+      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
+    if (!pdfNames.length) { wrap.style.display = 'none'; wrap.innerHTML = ''; checkReady(); return; }
+    wrap.innerHTML = '';
+    const hdr = document.createElement('p');
+    hdr.innerHTML = '<strong>Select pages to process:</strong>&nbsp;&nbsp;';
+    const allBtn  = document.createElement('button');
+    allBtn.type = 'button'; allBtn.textContent = 'Select all';
+    allBtn.onclick = () => { wrap.querySelectorAll('input[type=checkbox]').forEach(c => c.checked = true); checkReady(); };
+    const noneBtn = document.createElement('button');
+    noneBtn.type = 'button'; noneBtn.textContent = 'Deselect all';
+    noneBtn.onclick = () => { wrap.querySelectorAll('input[type=checkbox]').forEach(c => c.checked = false); checkReady(); };
+    hdr.appendChild(allBtn);
+    hdr.appendChild(document.createTextNode(' '));
+    hdr.appendChild(noneBtn);
+    wrap.appendChild(hdr);
+    for (const name of pdfNames) {
+      const lbl = document.createElement('label');
+      lbl.style.cssText = 'display:block; margin:2px 0';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox'; cb.value = name; cb.checked = true;
+      cb.addEventListener('change', checkReady);
+      lbl.appendChild(cb);
+      lbl.appendChild(document.createTextNode(' ' + name));
+      wrap.appendChild(lbl);
+    }
+    wrap.style.display = 'block';
+  } catch(e) {
+    console.error('PDF list error:', e);
+  }
+  checkReady();
+});
 
 // ── XMP helpers for PDF↔IDML matching ────────────────────────────────────────
 function extractPdfDerivedFromId(bytes) {
@@ -175,36 +223,29 @@ async function parseIdml(file) {
 }
 
 // ── Excel parsing ──────────────────────────────────────────────────────────────
-function parseExcel(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = e => {
-      try {
-        const wb    = XLSX.read(e.target.result, { type: 'array' });
-        const sheet = wb.Sheets[wb.SheetNames[0]];
-        const rows  = XLSX.utils.sheet_to_json(sheet, { defval: null });
-        const blocks = [], skuToBlock = {};
-        for (const row of rows) {
-          const skus = [];
-          for (const line of String(row['Products'] || '').split(/\r?\n/)) {
-            const m = line.match(/^\s*(\d{4,8})\s*-\s*(.*)/);
-            if (m) skus.push({ sku: m[1].padStart(7,'0'), name: m[2].trim() });
-          }
-          const b = {
-            pageName:    String(row['Page Name'] ?? '').trim(),
-            blockNumber: row['Block #'],
-            promoName:   row['Promotion/Group Name'] || row['MM/Group Name'] || '',
-            skus,
-          };
-          blocks.push(b);
-          for (const s of skus) if (!skuToBlock[s.sku]) skuToBlock[s.sku] = b;
-        }
-        resolve({ blocks, skuToBlock });
-      } catch(err) { reject(err); }
+// Accepts an ArrayBuffer (from a ZIP entry) or a File/Blob object.
+async function parseExcel(source) {
+  const buf = source instanceof ArrayBuffer ? source : await source.arrayBuffer();
+  const wb    = XLSX.read(buf, { type: 'array' });
+  const sheet = wb.Sheets[wb.SheetNames[0]];
+  const rows  = XLSX.utils.sheet_to_json(sheet, { defval: null });
+  const blocks = [], skuToBlock = {};
+  for (const row of rows) {
+    const skus = [];
+    for (const line of String(row['Products'] || '').split(/\r?\n/)) {
+      const m = line.match(/^\s*(\d{4,8})\s*-\s*(.*)/);
+      if (m) skus.push({ sku: m[1].padStart(7,'0'), name: m[2].trim() });
+    }
+    const b = {
+      pageName:    String(row['Page Name'] ?? '').trim(),
+      blockNumber: row['Block #'],
+      promoName:   row['Promotion/Group Name'] || row['MM/Group Name'] || '',
+      skus,
     };
-    reader.onerror = reject;
-    reader.readAsArrayBuffer(file);
-  });
+    blocks.push(b);
+    for (const s of skus) if (!skuToBlock[s.sku]) skuToBlock[s.sku] = b;
+  }
+  return { blocks, skuToBlock };
 }
 
 // ── FD-SKU list compression (lossless, Base64-encoded) ────────────────────────
@@ -260,10 +301,11 @@ function compressFdSkuList(inputString) {
 }
 
 // ── Merge multiple Excel files into one combined lookup ────────────────────────
-async function mergeExcels(files) {
+// Accepts an array of ArrayBuffers or File/Blob objects.
+async function mergeExcels(sources) {
   const allBlocks = [], skuToBlock = {};
-  for (const file of files) {
-    const { blocks } = await parseExcel(file);
+  for (const src of sources) {
+    const { blocks } = await parseExcel(src);
     for (const b of blocks) {
       allBlocks.push(b);
       for (const s of b.skus) if (!skuToBlock[s.sku]) skuToBlock[s.sku] = b;
@@ -389,29 +431,27 @@ $id('btn-generate').addEventListener('click', async () => {
   $id('download-wrap').style.display = 'none';
   $id('log').textContent = '';
 
-  const pdfZipFile  = $id('input-zip-pdf').files[0];
-  const idmlZipFile = $id('input-zip-idml').files[0];
-  const xlsFiles    = Array.from($id('input-xls').files);
-  const outName     = pdfZipFile.name.replace(/\.zip$/i, '') + '_blocks.xlsx';
+  const masterZip = $id('input-master-zip').files[0];
+  const outName   = masterZip.name.replace(/\.zip$/i, '') + '_blocks.xlsx';
+
+  async function readAllFromZip(zipFile) {
+    const z = await JSZip.loadAsync(zipFile);
+    const pdfEntries = {}, idmlEntries = {}, xlsBuffers = [];
+    for (const [p, entry] of Object.entries(z.files)) {
+      if (entry.dir || p.startsWith('__MACOSX/')) continue;
+      const name = p.replace(/\\/g, '/').split('/').pop();
+      if (name.startsWith('.')) continue;
+      if (/\.pdf$/i.test(name))        pdfEntries[name]  = entry;
+      else if (/\.idml$/i.test(name))  idmlEntries[name] = entry;
+      else if (/\.xlsx?$/i.test(name)) xlsBuffers.push(await entry.async('arraybuffer'));
+    }
+    return { pdfEntries, idmlEntries, xlsBuffers };
+  }
 
   try {
-    // ── read both ZIPs ───────────────────────────────────────────────────────
-    log('Reading ZIPs…');
-
-    async function readZipEntries(file, extRe) {
-      const z = await JSZip.loadAsync(file);
-      const out = {};
-      for (const [path, entry] of Object.entries(z.files)) {
-        if (entry.dir || path.startsWith('__MACOSX/')) continue;
-        const name = path.replace(/\\/g, '/').split('/').pop();
-        if (extRe.test(name)) out[name] = entry;
-      }
-      return out;
-    }
-
-    const pdfEntries  = await readZipEntries(pdfZipFile,  /\.pdf$/i);
-    const idmlEntries = await readZipEntries(idmlZipFile, /\.idml$/i);
-    log(`  → ${Object.keys(pdfEntries).length} PDF(s), ${Object.keys(idmlEntries).length} IDML(s)`);
+    log('Reading master ZIP...');
+    const { pdfEntries, idmlEntries, xlsBuffers } = await readAllFromZip(masterZip);
+    log(`  → ${Object.keys(pdfEntries).length} PDF(s), ${Object.keys(idmlEntries).length} IDML(s), ${xlsBuffers.length} Excel file(s)`);
 
     // ── pair by XMP, fall back to filename stem ──────────────────────────────
     log('Matching PDFs to IDMLs…');
@@ -494,11 +534,15 @@ $id('btn-generate').addEventListener('click', async () => {
     }
 
     pairs.sort((a, b) => a.pdfName.localeCompare(b.pdfName, undefined, { numeric: true, sensitivity: 'base' }));
-    log(`  → ${pairs.length} pair(s) matched`);
+    const selectedPdfs = new Set(
+      Array.from($id('pdf-selector').querySelectorAll('input[type=checkbox]:checked')).map(c => c.value)
+    );
+    const filteredPairs = pairs.filter(p => selectedPdfs.has(p.pdfName));
+    log(`  → ${pairs.length} pair(s) matched, ${filteredPairs.length} selected for export`);
 
     // ── parse Excel(s) ──────────────────────────────────────────────────────
-    log(`Parsing Excel (${xlsFiles.length} file${xlsFiles.length > 1 ? 's' : ''})…`);
-    const excel = await mergeExcels(xlsFiles);
+    log(`Parsing Excel (${xlsBuffers.length} file${xlsBuffers.length > 1 ? 's' : ''})...`);
+    const excel = await mergeExcels(xlsBuffers);
     log(`  → ${Object.keys(excel.skuToBlock).length} SKUs across ${excel.blocks.length} blocks`);
 
     // ── build output workbook ────────────────────────────────────────────────
@@ -523,9 +567,9 @@ $id('btn-generate').addEventListener('click', async () => {
 
     // ── process pages ────────────────────────────────────────────────────────
     let dataRow = 2, totalBlocks = 0;
-    for (let pi = 0; pi < pairs.length; pi++) {
-      const pair = pairs[pi];
-      log(`[${pi+1}/${pairs.length}] ${pair.pdfName}`);
+    for (let pi = 0; pi < filteredPairs.length; pi++) {
+      const pair = filteredPairs[pi];
+      log(`[${pi+1}/${filteredPairs.length}] ${pair.pdfName}`);
 
       let idml;
       try {
@@ -559,6 +603,12 @@ $id('btn-generate').addEventListener('click', async () => {
         } catch(e) {
           log(`  ⚠ SKU compression failed for block ${block.blockNumber}: ${e.message} — writing raw`);
           skuList = skuListRaw;
+        }
+
+        const keepLong = $id('chk-keep-long-skus').checked;
+        if (!keepLong && skuList.length > 255) {
+          log(`  ⚠ Skipping block (compressed SKUs = ${skuList.length} chars > 255): ${block.promoName || pair.pdfName}`);
+          continue;
         }
 
         // Crop screenshot from the already-rendered page canvas
