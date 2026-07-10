@@ -2,38 +2,415 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>FD Tagging Sheet Export</title>
+<style>
+/* ── Reset ─────────────────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+  background: #f0f2f6;
+  color: #111827;
+  min-height: 100vh;
+}
+
+/* ── Header ────────────────────────────────────────────────────────────────── */
+.page-header {
+  background: #003391;
+  color: #fff;
+  padding: 18px 32px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  box-shadow: 0 2px 10px rgba(0,0,0,.22);
+}
+.header-logo {
+  width: 40px; height: 40px;
+  background: #e8232a;
+  border-radius: 8px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 15px; font-weight: 800; color: #fff;
+  letter-spacing: -.5px; flex-shrink: 0;
+}
+.header-text h1 { font-size: 17px; font-weight: 700; letter-spacing: .01em; }
+.header-text p  { font-size: 12px; opacity: .65; margin-top: 2px; }
+
+/* ── Layout ────────────────────────────────────────────────────────────────── */
+.page-content {
+  max-width: 740px;
+  margin: 40px auto;
+  padding: 0 20px 80px;
+}
+
+/* ── Step reveal animation ─────────────────────────────────────────────────── */
+@keyframes stepFadeIn {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.step.revealed {
+  animation: stepFadeIn .3s ease both;
+}
+
+/* ── Step spine ────────────────────────────────────────────────────────────── */
+.steps { display: flex; flex-direction: column; }
+
+.step {
+  display: flex;
+  gap: 20px;
+  position: relative;
+}
+/* Connecting line between steps */
+.step:not(:last-child)::after {
+  content: '';
+  position: absolute;
+  left: 19px;
+  top: 56px;
+  width: 2px;
+  bottom: -4px;
+  background: #d1d5db;
+  z-index: 0;
+}
+
+.step-num {
+  flex-shrink: 0;
+  width: 40px; height: 40px;
+  border-radius: 50%;
+  background: #003391;
+  color: #fff;
+  font-size: 16px; font-weight: 700;
+  display: flex; align-items: center; justify-content: center;
+  position: relative; z-index: 1;
+  margin-top: 28px;
+  box-shadow: 0 2px 8px rgba(0,51,145,.28);
+}
+
+/* ── Card ──────────────────────────────────────────────────────────────────── */
+.step-card {
+  flex: 1;
+  background: #fff;
+  border: 1px solid #e2e5ea;
+  border-radius: 14px;
+  padding: 24px 28px;
+  margin-bottom: 20px;
+  box-shadow: 0 1px 4px rgba(0,0,0,.06), 0 4px 16px rgba(0,0,0,.04);
+}
+.step-card h2 {
+  font-size: 15px; font-weight: 700;
+  color: #111827;
+  margin-bottom: 4px;
+}
+.step-desc {
+  font-size: 13px; color: #6b7280;
+  margin-bottom: 18px; line-height: 1.5;
+}
+
+/* ── Drop zone ─────────────────────────────────────────────────────────────── */
+.drop-zone {
+  border: 2px dashed #cbd5e1;
+  border-radius: 10px;
+  padding: 36px 24px;
+  text-align: center;
+  cursor: pointer;
+  position: relative;
+  background: #fafbfc;
+  transition: border-color .15s, background .15s;
+}
+.drop-zone:hover, .drop-zone.drag-over {
+  border-color: #003391;
+  background: #eef2fb;
+}
+.drop-zone input[type=file] {
+  position: absolute; inset: 0;
+  opacity: 0; cursor: pointer;
+  width: 100%; height: 100%;
+}
+.drop-icon { font-size: 30px; margin-bottom: 10px; }
+.drop-label { font-size: 14px; color: #374151; margin-bottom: 4px; }
+.drop-label strong { color: #003391; }
+.drop-hint { font-size: 12px; color: #9ca3af; }
+
+/* ── ZIP summary ───────────────────────────────────────────────────────────── */
+.zip-summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 11px 16px;
+  background: #eef2fb;
+  border: 1px solid #c7d3ef;
+  border-radius: 8px;
+}
+.zip-icon { font-size: 18px; flex-shrink: 0; }
+.zip-name { font-size: 13px; font-weight: 600; color: #1e3a7a; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.zip-counts { display: flex; gap: 6px; flex-shrink: 0; flex-wrap: wrap; }
+.zip-badge {
+  background: #003391; color: #fff;
+  border-radius: 20px; padding: 2px 9px;
+  font-size: 11px; font-weight: 600; white-space: nowrap;
+}
+
+/* ── Section divider ───────────────────────────────────────────────────────── */
+.section-divider {
+  border: none; border-top: 1px solid #f0f0f0;
+  margin: 20px 0 16px;
+}
+
+/* ── PDF selector ──────────────────────────────────────────────────────────── */
+.pdf-selector-header {
+  display: flex; align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+.pdf-selector-header span {
+  font-size: 13px; font-weight: 600; color: #374151;
+}
+.btn-group { display: flex; gap: 6px; }
+.btn-sm {
+  background: none;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px; color: #374151;
+  cursor: pointer;
+  transition: background .12s, border-color .12s;
+}
+.btn-sm:hover { background: #f3f4f6; border-color: #9ca3af; }
+
+.pdf-list {
+  max-height: 220px; overflow-y: auto;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #fafafa;
+}
+.pdf-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 14px;
+  cursor: pointer;
+  transition: background .1s;
+  font-size: 13px; color: #374151;
+  user-select: none;
+}
+.pdf-item:not(:last-child) { border-bottom: 1px solid #f3f4f6; }
+.pdf-item:hover { background: #f0f2f6; }
+.pdf-item input[type=checkbox] {
+  accent-color: #003391;
+  width: 14px; height: 14px; flex-shrink: 0;
+}
+
+/* ── Empty placeholder ─────────────────────────────────────────────────────── */
+.step-placeholder {
+  text-align: center;
+  padding: 20px;
+  color: #9ca3af;
+  font-size: 13px;
+  background: #fafafa;
+  border: 1px dashed #e5e7eb;
+  border-radius: 8px;
+}
+.step-placeholder svg { display: block; margin: 0 auto 8px; opacity: .4; }
+
+/* ── Manual pairing ────────────────────────────────────────────────────────── */
+.pairing-section { margin-top: 16px; }
+.pairing-header {
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 12px;
+  padding-top: 16px;
+  border-top: 1px solid #f0f0f0;
+}
+.pairing-warn-badge {
+  background: #fef3c7; color: #92400e;
+  border: 1px solid #fcd34d;
+  border-radius: 20px;
+  padding: 2px 9px;
+  font-size: 11px; font-weight: 600;
+}
+.pairing-header > span {
+  font-size: 13px; font-weight: 600; color: #374151;
+}
+.pairing-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.pairing-table td {
+  padding: 5px 8px 5px 0;
+  vertical-align: middle;
+}
+.pairing-table td.pdf-cell {
+  color: #374151;
+  padding-right: 16px;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pairing-table select {
+  width: 100%; max-width: 340px;
+  border: 1px solid #d1d5db; border-radius: 6px;
+  padding: 5px 8px;
+  font-size: 12px; color: #374151;
+  background: #fff; cursor: pointer; outline: none;
+  transition: border-color .12s;
+}
+.pairing-table select:focus { border-color: #003391; box-shadow: 0 0 0 2px rgba(0,51,145,.12); }
+
+/* ── Option row ────────────────────────────────────────────────────────────── */
+.option-row { margin-top: 18px; padding-top: 16px; border-top: 1px solid #f0f0f0; }
+.option-label {
+  display: flex; align-items: center; gap: 9px;
+  font-size: 13px; color: #374151; cursor: pointer;
+}
+.option-label input[type=checkbox] {
+  accent-color: #003391; width: 14px; height: 14px; flex-shrink: 0;
+}
+
+/* ── Generate button ───────────────────────────────────────────────────────── */
+.btn-primary {
+  background: #003391; color: #fff;
+  border: none; border-radius: 9px;
+  padding: 13px 30px;
+  font-size: 14px; font-weight: 600;
+  cursor: pointer; letter-spacing: .01em;
+  box-shadow: 0 2px 8px rgba(0,51,145,.28);
+  transition: background .15s, box-shadow .15s, transform .1s;
+  display: inline-flex; align-items: center; gap: 8px;
+}
+.btn-primary:hover:not(:disabled) {
+  background: #0041b8;
+  box-shadow: 0 4px 14px rgba(0,51,145,.35);
+  transform: translateY(-1px);
+}
+.btn-primary:active:not(:disabled) { transform: translateY(0); }
+.btn-primary:disabled {
+  background: #9ca3af; box-shadow: none; cursor: not-allowed;
+}
+
+/* ── Progress log ──────────────────────────────────────────────────────────── */
+.progress-wrap { margin-top: 22px; }
+.log-label {
+  font-size: 11px; font-weight: 600;
+  color: #9ca3af; text-transform: uppercase;
+  letter-spacing: .07em; margin-bottom: 7px;
+}
+#log {
+  background: #0f1923; color: #86efac;
+  border-radius: 8px; padding: 14px 16px;
+  font-family: 'SF Mono', 'Fira Code', 'Fira Mono', 'Roboto Mono', monospace;
+  font-size: 11.5px; line-height: 1.65;
+  max-height: 260px; overflow-y: auto;
+  white-space: pre-wrap; word-break: break-all;
+}
+
+/* ── Download button ───────────────────────────────────────────────────────── */
+.download-wrap { margin-top: 16px; }
+.btn-download {
+  display: inline-flex; align-items: center; gap: 9px;
+  background: #16a34a; color: #fff;
+  text-decoration: none; border-radius: 9px;
+  padding: 12px 24px;
+  font-size: 14px; font-weight: 600;
+  box-shadow: 0 2px 8px rgba(22,163,74,.3);
+  transition: background .15s, box-shadow .15s;
+}
+.btn-download:hover {
+  background: #15803d;
+  box-shadow: 0 4px 12px rgba(22,163,74,.38);
+}
+
+/* ── Utility ───────────────────────────────────────────────────────────────── */
+.hidden { display: none !important; }
+</style>
 </head>
 <body>
-<h1>Family Dollar Tagging Sheet Export</h1>
 
-<p>
-  <label>Master ZIP (PDFs, IDMLs, and Excel summary file(s) — any folder structure):
-    <input type="file" id="input-master-zip" accept=".zip,application/zip">
-  </label>
-</p>
+<!-- ── Header ─────────────────────────────────────────────────────────────── -->
+<header class="page-header">
+  <div class="header-logo">FD</div>
+  <div class="header-text">
+    <h1>Tagging Sheet Export</h1>
+    <p>Generate a block-level Excel sheet from PDFs, IDMLs, and summary files</p>
+  </div>
+</header>
 
-<p>
-  <label>
-    <input type="checkbox" id="chk-keep-long-skus" checked>
-    Keep blocks whose compressed SKU list exceeds 255 characters
-  </label>
-</p>
+<!-- ── Main ───────────────────────────────────────────────────────────────── -->
+<div class="page-content">
+  <div class="steps">
 
-<div id="pdf-selector" style="display:none"></div>
+    <!-- ── Step 1 ── Upload ────────────────────────────────────────────────── -->
+    <div class="step">
+      <div class="step-num">1</div>
+      <div class="step-card">
+        <h2>Upload Master ZIP</h2>
+        <p class="step-desc">A single ZIP file containing PDFs, IDMLs, and Excel summary file(s) in any folder structure.</p>
 
-<div id="manual-pair-wrap" style="display:none"></div>
+        <div class="drop-zone" id="drop-zone">
+          <div class="drop-icon">🗜️</div>
+          <div class="drop-label"><strong>Drop your ZIP here</strong> or click to browse</div>
+          <div class="drop-hint">Accepts .zip files only</div>
+          <input type="file" id="input-master-zip" accept=".zip,application/zip">
+        </div>
 
-<p><button id="btn-generate" disabled>Generate Excel Tagging Sheet</button></p>
+        <div id="zip-summary" class="zip-summary hidden">
+          <div class="zip-icon">📦</div>
+          <div class="zip-name" id="zip-filename"></div>
+          <div class="zip-counts" id="zip-counts"></div>
+        </div>
+      </div>
+    </div>
 
-<div id="progress-wrap" style="display:none">
-  <p><strong>Progress</strong></p>
-  <pre id="log" style="max-height:300px;overflow-y:auto;background:#f4f4f4;padding:8px"></pre>
-</div>
+    <!-- ── Step 2 ── Configure ─────────────────────────────────────────────── -->
+    <div class="step hidden" id="step-2-wrap">
+      <div class="step-num">2</div>
+      <div class="step-card">
+        <h2>Configure</h2>
 
-<div id="download-wrap" style="display:none">
-  <a id="btn-download" href="#" download>⬇ Download sheet</a>
-</div>
+        <!-- placeholder shown before ZIP is loaded -->
+        <div id="step2-placeholder" class="step-placeholder">
+          <svg width="28" height="28" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"/></svg>
+          Upload a ZIP file above to configure options
+        </div>
+
+        <!-- PDF selector (shown after ZIP load) -->
+        <div id="pdf-selector" style="display:none"></div>
+
+        <!-- Manual pairing (shown when unmatched PDFs exist) -->
+        <div id="manual-pair-wrap" style="display:none"></div>
+
+        <!-- Option: keep long SKUs (always visible, but below content) -->
+        <!-- SHOW_KEEP_LONG_SKUS: set to true to reveal this option -->
+        <div class="option-row" id="keep-long-skus-row" style="display:none">
+          <label class="option-label">
+            <input type="checkbox" id="chk-keep-long-skus">
+            Keep blocks whose compressed SKU list exceeds 255 characters
+          </label>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Step 3 ── Generate ──────────────────────────────────────────────── -->
+    <div class="step hidden" id="step-3-wrap">
+      <div class="step-num">3</div>
+      <div class="step-card">
+        <h2>Generate</h2>
+
+        <button id="btn-generate" class="btn-primary" disabled>
+          <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"/></svg>
+          Generate Excel Tagging Sheet
+        </button>
+
+        <div id="progress-wrap" class="progress-wrap hidden">
+          <div class="log-label">Progress</div>
+          <pre id="log"></pre>
+        </div>
+
+        <div id="download-wrap" class="download-wrap hidden">
+          <a id="btn-download" href="#" download class="btn-download">
+            <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"/></svg>
+            Download
+          </a>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /steps -->
+</div><!-- /page-content -->
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
@@ -66,6 +443,22 @@ function checkReady() {
   $id('btn-generate').disabled = !hasZip || !hasChecked;
 }
 
+// ── Drop zone drag-and-drop ────────────────────────────────────────────────────
+const dropZone = $id('drop-zone');
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropZone.classList.remove('drag-over');
+  const file = e.dataTransfer?.files[0];
+  if (file && /\.zip$/i.test(file.name)) {
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    $id('input-master-zip').files = dt.files;
+    $id('input-master-zip').dispatchEvent(new Event('change'));
+  }
+});
+
 // ── Manual pairing state ──────────────────────────────────────────────────────
 let unmatchedPdfNames  = [];        // PDFs with no auto filename-match
 let availableIdmlNames = [];        // all IDML filenames in current ZIP
@@ -94,28 +487,35 @@ function renderManualPairUI() {
   wrap.innerHTML = '';
   wrap.style.display = 'block';
 
-  const hdr = document.createElement('p');
-  hdr.innerHTML = `<strong>&#9888; ${unmatchedPdfNames.length} PDF(s) could not be matched automatically &mdash; assign each an IDML (optional):</strong>`;
-  wrap.appendChild(hdr);
+  const section = document.createElement('div');
+  section.className = 'pairing-section';
+
+  const hdr = document.createElement('div');
+  hdr.className = 'pairing-header';
+  const badge = document.createElement('span');
+  badge.className = 'pairing-warn-badge';
+  badge.textContent = `⚠ ${unmatchedPdfNames.length} unmatched`;
+  const lbl = document.createElement('span');
+  lbl.textContent = 'Assign each unmatched PDF to an IDML manually (optional)';
+  hdr.appendChild(badge);
+  hdr.appendChild(lbl);
+  section.appendChild(hdr);
 
   const table = document.createElement('table');
-  table.style.cssText = 'border-collapse:collapse; margin-bottom:8px';
+  table.className = 'pairing-table';
   for (const name of unmatchedPdfNames) {
     const tr = document.createElement('tr');
 
-    // PDF name cell
     const tdName = document.createElement('td');
-    tdName.style.cssText = 'padding:3px 10px 3px 0; white-space:nowrap';
+    tdName.className = 'pdf-cell';
+    tdName.title = name;
     tdName.textContent = name;
     tr.appendChild(tdName);
 
-    // IDML dropdown cell
     const tdSel = document.createElement('td');
-    tdSel.style.padding = '3px 6px 3px 0';
     const sel = document.createElement('select');
-    sel.style.maxWidth = '320px';
     const defOpt = document.createElement('option');
-    defOpt.value = ''; defOpt.textContent = '\u2014 no pairing \u2014';
+    defOpt.value = ''; defOpt.textContent = '— no pairing —';
     sel.appendChild(defOpt);
     for (const n of availableIdmlNames) {
       const opt = document.createElement('option');
@@ -133,50 +533,103 @@ function renderManualPairUI() {
 
     table.appendChild(tr);
   }
-  wrap.appendChild(table);
+  section.appendChild(table);
+  wrap.appendChild(section);
 }
 
 $id('input-master-zip').addEventListener('change', async () => {
   const file = $id('input-master-zip').files[0];
-  const wrap = $id('pdf-selector');
-  if (!file) { wrap.style.display = 'none'; wrap.innerHTML = ''; checkReady(); return; }
+  const pdfWrap = $id('pdf-selector');
+
+  if (!file) {
+    pdfWrap.style.display = 'none'; pdfWrap.innerHTML = '';
+    $id('zip-summary').classList.add('hidden');
+    $id('step2-placeholder').classList.remove('hidden');
+    $id('step-2-wrap').classList.add('hidden');
+    $id('step-3-wrap').classList.add('hidden');
+    checkReady(); return;
+  }
+
   try {
     const z = await JSZip.loadAsync(file);
-    const pdfNames = Object.keys(z.files)
-      .filter(p => !z.files[p].dir && !p.startsWith('__MACOSX/'))
-      .map(p => p.replace(/\\/g, '/').split('/').pop())
+    const allFiles = Object.keys(z.files)
+      .filter(p => !z.files[p].dir && !p.startsWith('__MACOSX/'));
+    const getName = p => p.replace(/\\/g, '/').split('/').pop();
+
+    const pdfNames = allFiles.map(getName)
       .filter(n => /\.pdf$/i.test(n) && !n.startsWith('.'))
       .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
-    if (!pdfNames.length) { wrap.style.display = 'none'; wrap.innerHTML = ''; checkReady(); return; }
-    wrap.innerHTML = '';
-    const hdr = document.createElement('p');
-    hdr.innerHTML = '<strong>Select pages to process:</strong>&nbsp;&nbsp;';
-    const allBtn  = document.createElement('button');
-    allBtn.type = 'button'; allBtn.textContent = 'Select all';
-    allBtn.onclick = () => { wrap.querySelectorAll('input[type=checkbox]').forEach(c => c.checked = true); checkReady(); };
+    const idmlCount = allFiles.map(getName).filter(n => /\.idml$/i.test(n) && !n.startsWith('.')).length;
+    const xlsCount  = allFiles.map(getName).filter(n => /\.xlsx?$/i.test(n) && !n.startsWith('.')).length;
+
+    // Reveal steps 2 & 3 with a staggered animation
+    const s2 = $id('step-2-wrap'), s3 = $id('step-3-wrap');
+    s2.classList.remove('hidden'); s2.classList.remove('revealed');
+    void s2.offsetWidth; // force reflow so animation restarts
+    s2.classList.add('revealed');
+    setTimeout(() => {
+      s3.classList.remove('hidden'); s3.classList.remove('revealed');
+      void s3.offsetWidth;
+      s3.classList.add('revealed');
+    }, 120);
+
+    // Update ZIP summary
+    $id('zip-filename').textContent = file.name;
+    const counts = $id('zip-counts');
+    counts.innerHTML = '';
+    [[pdfNames.length, 'PDF'], [idmlCount, 'IDML'], [xlsCount, 'Excel']].forEach(([n, label]) => {
+      if (n > 0) {
+        const b = document.createElement('span');
+        b.className = 'zip-badge';
+        b.textContent = `${n} ${label}`;
+        counts.appendChild(b);
+      }
+    });
+    $id('zip-summary').classList.remove('hidden');
+
+    if (!pdfNames.length) {
+      pdfWrap.style.display = 'none'; pdfWrap.innerHTML = '';
+      $id('step2-placeholder').classList.remove('hidden');
+      checkReady(); return;
+    }
+
+    // Build PDF selector
+    $id('step2-placeholder').classList.add('hidden');
+    pdfWrap.innerHTML = '';
+
+    const hdr = document.createElement('div');
+    hdr.className = 'pdf-selector-header';
+    const lbl = document.createElement('span');
+    lbl.textContent = 'Select pages to process';
+    const actions = document.createElement('div');
+    actions.className = 'btn-group';
+    const allBtn = document.createElement('button');
+    allBtn.type = 'button'; allBtn.className = 'btn-sm'; allBtn.textContent = 'Select all';
+    allBtn.onclick = () => { pdfWrap.querySelectorAll('input[type=checkbox]').forEach(c => c.checked = true); checkReady(); };
     const noneBtn = document.createElement('button');
-    noneBtn.type = 'button'; noneBtn.textContent = 'Deselect all';
-    noneBtn.onclick = () => { wrap.querySelectorAll('input[type=checkbox]').forEach(c => c.checked = false); checkReady(); };
-    hdr.appendChild(allBtn);
-    hdr.appendChild(document.createTextNode(' '));
-    hdr.appendChild(noneBtn);
-    wrap.appendChild(hdr);
+    noneBtn.type = 'button'; noneBtn.className = 'btn-sm'; noneBtn.textContent = 'Deselect all';
+    noneBtn.onclick = () => { pdfWrap.querySelectorAll('input[type=checkbox]').forEach(c => c.checked = false); checkReady(); };
+    actions.appendChild(allBtn); actions.appendChild(noneBtn);
+    hdr.appendChild(lbl); hdr.appendChild(actions);
+    pdfWrap.appendChild(hdr);
+
+    const list = document.createElement('div');
+    list.className = 'pdf-list';
     for (const name of pdfNames) {
-      const lbl = document.createElement('label');
-      lbl.style.cssText = 'display:block; margin:2px 0';
+      const item = document.createElement('label');
+      item.className = 'pdf-item';
       const cb = document.createElement('input');
       cb.type = 'checkbox'; cb.value = name; cb.checked = true;
       cb.addEventListener('change', checkReady);
-      lbl.appendChild(cb);
-      lbl.appendChild(document.createTextNode(' ' + name));
-      wrap.appendChild(lbl);
+      item.appendChild(cb);
+      item.appendChild(document.createTextNode(name));
+      list.appendChild(item);
     }
-    wrap.style.display = 'block';
+    pdfWrap.appendChild(list);
+    pdfWrap.style.display = 'block';
 
-    // Identify unmatched PDFs by filename and render manual pairing UI
-    availableIdmlNames = Object.keys(z.files)
-      .filter(p => !z.files[p].dir && !p.startsWith('__MACOSX/'))
-      .map(p => p.replace(/\\/g, '/').split('/').pop())
+    // Identify unmatched PDFs and render manual pairing UI
+    availableIdmlNames = allFiles.map(getName)
       .filter(n => /\.idml$/i.test(n) && !n.startsWith('.'))
       .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
     unmatchedPdfNames = getUnmatchedByFilename(pdfNames, availableIdmlNames);
@@ -509,8 +962,8 @@ function canvasToBase64(canvas) {
 // ── main ───────────────────────────────────────────────────────────────────────
 $id('btn-generate').addEventListener('click', async () => {
   $id('btn-generate').disabled = true;
-  $id('progress-wrap').style.display = 'block';
-  $id('download-wrap').style.display = 'none';
+  $id('progress-wrap').classList.remove('hidden');
+  $id('download-wrap').classList.add('hidden');
   $id('log').textContent = '';
 
   const masterZip = $id('input-master-zip').files[0];
@@ -777,8 +1230,8 @@ $id('btn-generate').addEventListener('click', async () => {
     const dl  = $id('btn-download');
     dl.href     = url;
     dl.download = outName;
-    dl.textContent = `⬇ Download ${outName}`;
-    $id('download-wrap').style.display = 'block';
+    dl.innerHTML = `<svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"/></svg> Download ${outName}`;
+    $id('download-wrap').classList.remove('hidden');
     log(`Done — ${totalBlocks} block(s) exported.`);
 
   } catch(err) {
