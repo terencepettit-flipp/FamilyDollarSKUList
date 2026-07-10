@@ -52,6 +52,35 @@ body {
   animation: stepFadeIn .3s ease both;
 }
 
+/* ── Collapsible card ──────────────────────────────────────────────────────── */
+.card-header {
+  display: flex; align-items: center; justify-content: space-between;
+  cursor: pointer; user-select: none;
+  margin: -4px -4px 0; padding: 4px 4px 0;
+  border-radius: 8px;
+  transition: background .12s;
+}
+.card-header:hover { background: #f3f5f8; }
+.card-header h2 { pointer-events: none; }
+.chevron {
+  flex-shrink: 0; color: #9ca3af;
+  transition: transform .25s ease;
+}
+.step-card.is-collapsed .chevron { transform: rotate(-90deg); }
+
+.card-body {
+  overflow: hidden;
+  max-height: 2000px;
+  opacity: 1;
+  transition: max-height .35s ease, opacity .25s ease, margin-top .25s ease;
+  margin-top: 0;
+}
+.step-card.is-collapsed .card-body {
+  max-height: 0;
+  opacity: 0;
+  margin-top: -8px;
+}
+
 /* ── Step spine ────────────────────────────────────────────────────────────── */
 .steps { display: flex; flex-direction: column; }
 
@@ -336,21 +365,26 @@ body {
     <!-- ── Step 1 ── Upload ────────────────────────────────────────────────── -->
     <div class="step">
       <div class="step-num">1</div>
-      <div class="step-card">
-        <h2>Upload Master ZIP</h2>
-        <p class="step-desc">A single ZIP file containing PDFs, IDMLs, and Excel summary file(s) in any folder structure.</p>
-
-        <div class="drop-zone" id="drop-zone">
-          <div class="drop-icon">🗜️</div>
-          <div class="drop-label"><strong>Drop your ZIP here</strong> or click to browse</div>
-          <div class="drop-hint">Accepts .zip files only</div>
-          <input type="file" id="input-master-zip" accept=".zip,application/zip">
+      <div class="step-card" id="step-1-card">
+        <div class="card-header" onclick="toggleCard('step-1-card')">
+          <h2>Upload Master ZIP</h2>
+          <svg class="chevron" width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
         </div>
+        <div class="card-body">
+          <p class="step-desc" style="margin-top:12px">A single ZIP file containing PDFs, IDMLs, and Excel summary file(s) in any folder structure.</p>
 
-        <div id="zip-summary" class="zip-summary hidden">
-          <div class="zip-icon">📦</div>
-          <div class="zip-name" id="zip-filename"></div>
-          <div class="zip-counts" id="zip-counts"></div>
+          <div class="drop-zone" id="drop-zone">
+            <div class="drop-icon">🗜️</div>
+            <div class="drop-label"><strong>Drop your ZIP here</strong> or click to browse</div>
+            <div class="drop-hint">Accepts .zip files only</div>
+            <input type="file" id="input-master-zip" accept=".zip,application/zip">
+          </div>
+
+          <div id="zip-summary" class="zip-summary hidden">
+            <div class="zip-icon">📦</div>
+            <div class="zip-name" id="zip-filename"></div>
+            <div class="zip-counts" id="zip-counts"></div>
+          </div>
         </div>
       </div>
     </div>
@@ -358,28 +392,32 @@ body {
     <!-- ── Step 2 ── Configure ─────────────────────────────────────────────── -->
     <div class="step hidden" id="step-2-wrap">
       <div class="step-num">2</div>
-      <div class="step-card">
-        <h2>Configure</h2>
-
-        <!-- placeholder shown before ZIP is loaded -->
-        <div id="step2-placeholder" class="step-placeholder">
-          <svg width="28" height="28" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"/></svg>
-          Upload a ZIP file above to configure options
+      <div class="step-card" id="step-2-card">
+        <div class="card-header" onclick="toggleCard('step-2-card')">
+          <h2>Configure</h2>
+          <svg class="chevron" width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
         </div>
+        <div class="card-body">
+          <!-- placeholder shown before ZIP is loaded -->
+          <div id="step2-placeholder" class="step-placeholder" style="margin-top:12px">
+            <svg width="28" height="28" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"/></svg>
+            Upload a ZIP file above to configure options
+          </div>
 
-        <!-- PDF selector (shown after ZIP load) -->
-        <div id="pdf-selector" style="display:none"></div>
+          <!-- PDF selector (shown after ZIP load) -->
+          <div id="pdf-selector" style="display:none"></div>
 
-        <!-- Manual pairing (shown when unmatched PDFs exist) -->
-        <div id="manual-pair-wrap" style="display:none"></div>
+          <!-- Manual pairing (shown when unmatched PDFs exist) -->
+          <div id="manual-pair-wrap" style="display:none"></div>
 
-        <!-- Option: keep long SKUs (always visible, but below content) -->
-        <!-- SHOW_KEEP_LONG_SKUS: set to true to reveal this option -->
-        <div class="option-row" id="keep-long-skus-row" style="display:none">
-          <label class="option-label">
-            <input type="checkbox" id="chk-keep-long-skus">
-            Keep blocks whose compressed SKU list exceeds 255 characters
-          </label>
+          <!-- Option: keep long SKUs (always visible, but below content) -->
+          <!-- SHOW_KEEP_LONG_SKUS: set to true to reveal this option -->
+          <div class="option-row" id="keep-long-skus-row" style="display:none">
+            <label class="option-label">
+              <input type="checkbox" id="chk-keep-long-skus">
+              Keep blocks whose compressed SKU list exceeds 255 characters
+            </label>
+          </div>
         </div>
       </div>
     </div>
@@ -441,6 +479,14 @@ function checkReady() {
   const hasZip     = !!$id('input-master-zip').files[0];
   const hasChecked = $id('pdf-selector').querySelectorAll('input[type=checkbox]:checked').length > 0;
   $id('btn-generate').disabled = !hasZip || !hasChecked;
+}
+
+// ── Collapsible cards ─────────────────────────────────────────────────────────
+function toggleCard(cardId) {
+  $id(cardId).classList.toggle('is-collapsed');
+}
+function collapseCard(cardId) {
+  $id(cardId).classList.add('is-collapsed');
 }
 
 // ── Drop zone drag-and-drop ────────────────────────────────────────────────────
@@ -965,6 +1011,8 @@ $id('btn-generate').addEventListener('click', async () => {
   $id('progress-wrap').classList.remove('hidden');
   $id('download-wrap').classList.add('hidden');
   $id('log').textContent = '';
+  collapseCard('step-1-card');
+  collapseCard('step-2-card');
 
   const masterZip = $id('input-master-zip').files[0];
   const outName   = masterZip.name.replace(/\.zip$/i, '') + '_blocks.xlsx';
