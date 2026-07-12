@@ -727,6 +727,16 @@ function compose(t1, t2) {
 
 function applyT(t, x, y) { return [t[0]*x+t[2]*y+t[4], t[1]*x+t[3]*y+t[5]]; }
 
+// ── Block text assembly ────────────────────────────────────────────────────────
+// textBoxTexts: { TextBox1: '...', TextBox2: '...', ... } from BackingStory Stories.
+// Joins TextBox1–5 in order; each non-empty box becomes its own line.
+function assembleBlockText(textBoxTexts) {
+  return ['TextBox1','TextBox2','TextBox3','TextBox4','TextBox5']
+    .map(r => (textBoxTexts[r] || '').trim())
+    .filter(Boolean)
+    .join('\n');
+}
+
 // ── IDML parsing ───────────────────────────────────────────────────────────────
 async function parseIdml(file) {
   const zip    = await JSZip.loadAsync(file);
@@ -799,7 +809,78 @@ async function parseIdml(file) {
 
   const onPage  = rects.filter(r => r.bbox.x2>pageBox.x1 && r.bbox.x1<pageBox.x2 && r.bbox.y2>pageBox.y1 && r.bbox.y1<pageBox.y2);
   const offPage = rects.filter(r => !onPage.includes(r));
-  return { rects: onPage, offPageRects: offPage, pageBox,
+
+  // ── BackingStory: ItemPositions + Story texts ─────────────────────────────
+  // Builds a no-overlap text chain: ItemPosition → image hrefs (match Spread
+  // Rectangles by filename) + TextBox Self IDs (match Stories for copy text).
+  const itemPositions = [];
+  const bsEntry = zip.files['XML/BackingStory.xml'];
+  if (bsEntry) {
+    const bsXml  = await bsEntry.async('text');
+    const bsDoc  = new DOMParser().parseFromString(bsXml, 'application/xml');
+
+    // Build: XMLElement.Self → story text (excluding Disclaimer / Limit content)
+    const storyTextMap = {};
+    const SKIP_TAGS = new Set(['Disclaimer', 'Limit']);
+    for (const [fname, entry] of Object.entries(zip.files)) {
+      if (!fname.startsWith('Stories/Story_')) continue;
+      const stXml  = await entry.async('text');
+      const stDoc  = new DOMParser().parseFromString(stXml, 'application/xml');
+      const xmlEls = stDoc.getElementsByTagName('XMLElement');
+      if (!xmlEls.length) continue;
+      const topSelf = xmlEls[0].getAttribute('Self');
+      if (!topSelf) continue;
+      // Collect Content nodes that live inside a skip container
+      const skipNodes = new Set();
+      for (const xe of stDoc.getElementsByTagName('XMLElement')) {
+        const t = (xe.getAttribute('MarkupTag') || '').replace('XMLTag/', '');
+        if (SKIP_TAGS.has(t)) for (const c of xe.getElementsByTagName('Content')) skipNodes.add(c);
+      }
+      const parts = [];
+      for (const c of stDoc.getElementsByTagName('Content')) {
+        if (skipNodes.has(c)) continue;
+        const t = c.textContent.trim();
+        if (t) parts.push(t);
+      }
+      const text = parts.join(' ').replace(/\s+/g, ' ').trim();
+      if (text) storyTextMap[topSelf] = text;
+    }
+
+    // Parse each ItemPosition from BackingStory
+    for (const el of bsDoc.getElementsByTagName('XMLElement')) {
+      if (!(el.getAttribute('MarkupTag') || '').includes('ItemPosition')) continue;
+      const posSelf = el.getAttribute('Self') || '';
+      let bsSku = null;
+      const imageFilenames = [];
+      const textBoxTexts  = {};
+
+      for (const child of el.children) {
+        const cTag  = child.tagName.split('}').pop();
+        const cmt   = (child.getAttribute('MarkupTag') || '').replace('XMLTag/', '');
+        const cSelf = child.getAttribute('Self') || '';
+
+        if (cTag === 'XMLAttribute' && child.getAttribute('Name') === 'SKU') {
+          bsSku = child.getAttribute('Value') || '';
+        } else if (cmt.startsWith('Image')) {
+          for (const attr of child.children) {
+            if (attr.tagName.split('}').pop() === 'XMLAttribute' &&
+                attr.getAttribute('Name') === 'href') {
+              const fname = (attr.getAttribute('Value') || '').split('/').pop();
+              if (fname) imageFilenames.push(fname);
+            }
+          }
+        } else if (cmt.startsWith('TextBox')) {
+          const text = storyTextMap[cSelf] || '';
+          if (text) textBoxTexts[cmt] = text;
+        }
+      }
+
+      itemPositions.push({ tag: (el.getAttribute('MarkupTag')||'').replace('XMLTag/',''),
+                           posSelf, bsSku, imageFilenames, textBoxTexts });
+    }
+  }
+
+  return { rects: onPage, offPageRects: offPage, pageBox, itemPositions,
            pageWidth: pageBox.x2-pageBox.x1, pageHeight: pageBox.y2-pageBox.y1 };
 }
 
@@ -897,28 +978,59 @@ async function mergeExcels(sources) {
 
 // ── Join ───────────────────────────────────────────────────────────────────────
 function joinIdmlExcel(idml, excel) {
-  const blockMap = new Map(), unmatched = [];
-
-  for (const r of idml.rects) {
-    const m = ('/' + r.filename).match(SKU_RE);
-    if (!m) { unmatched.push({...r, reason:'no SKU prefix'}); continue; }
-    const sku   = m[1].padStart(7, '0');
-    const block = excel.skuToBlock[sku];
-    if (!block) { unmatched.push({...r, sku, reason:'SKU not in Excel'}); continue; }
-    const key = `${block.pageName}-${block.blockNumber}`;
-    if (!blockMap.has(key)) blockMap.set(key, {block, frames:[]});
-    blockMap.get(key).frames.push({...r, sku});
-  }
-
+  const unmatched = [];
   const out = [];
-  for (const {block, frames} of blockMap.values()) {
-    const x1=Math.min(...frames.map(f=>f.bbox.x1)), y1=Math.min(...frames.map(f=>f.bbox.y1));
-    const x2=Math.max(...frames.map(f=>f.bbox.x2)), y2=Math.max(...frames.map(f=>f.bbox.y2));
-    out.push({ block, frames, isFullPage:false,
-               bboxPt:{ x:x1-idml.pageBox.x1, y:y1-idml.pageBox.y1, w:x2-x1, h:y2-y1 } });
+
+  if (idml.itemPositions && idml.itemPositions.length) {
+    // ── BackingStory path: direct filename → Rectangle match, no spatial overlap ──
+    // Build filename → rect lookup from Spread
+    const rectByFilename = new Map();
+    for (const r of idml.rects) rectByFilename.set(r.filename, r);
+
+    for (const ip of idml.itemPositions) {
+      // Collect Rectangles and SKUs for this ItemPosition's images
+      const frames = [];
+      let block = null;
+      for (const fname of ip.imageFilenames) {
+        const r = rectByFilename.get(fname);
+        if (r) frames.push(r);
+        if (!block) {
+          const m = ('/' + fname).match(SKU_RE);
+          if (m) block = excel.skuToBlock[m[1].padStart(7, '0')];
+        }
+      }
+      if (!block || !frames.length) {
+        if (frames.length) unmatched.push({ ...frames[0], reason: 'SKU not in Excel', bsSku: ip.bsSku });
+        continue;
+      }
+      const x1=Math.min(...frames.map(f=>f.bbox.x1)), y1=Math.min(...frames.map(f=>f.bbox.y1));
+      const x2=Math.max(...frames.map(f=>f.bbox.x2)), y2=Math.max(...frames.map(f=>f.bbox.y2));
+      const blockText = assembleBlockText(ip.textBoxTexts);
+      out.push({ block, frames, isFullPage:false, blockText,
+                 bboxPt:{ x:x1-idml.pageBox.x1, y:y1-idml.pageBox.y1, w:x2-x1, h:y2-y1 } });
+    }
+  } else {
+    // ── Fallback: original SKU-regex approach for IDMLs without BackingStory ──
+    const blockMap = new Map();
+    for (const r of idml.rects) {
+      const m = ('/' + r.filename).match(SKU_RE);
+      if (!m) { unmatched.push({...r, reason:'no SKU prefix'}); continue; }
+      const sku   = m[1].padStart(7, '0');
+      const block = excel.skuToBlock[sku];
+      if (!block) { unmatched.push({...r, sku, reason:'SKU not in Excel'}); continue; }
+      const key = `${block.pageName}-${block.blockNumber}`;
+      if (!blockMap.has(key)) blockMap.set(key, {block, frames:[]});
+      blockMap.get(key).frames.push({...r, sku});
+    }
+    for (const {block, frames} of blockMap.values()) {
+      const x1=Math.min(...frames.map(f=>f.bbox.x1)), y1=Math.min(...frames.map(f=>f.bbox.y1));
+      const x2=Math.max(...frames.map(f=>f.bbox.x2)), y2=Math.max(...frames.map(f=>f.bbox.y2));
+      out.push({ block, frames, isFullPage:false, blockText:'',
+                 bboxPt:{ x:x1-idml.pageBox.x1, y:y1-idml.pageBox.y1, w:x2-x1, h:y2-y1 } });
+    }
   }
 
-  // Pasteboard fallback
+  // Pasteboard fallback (no on-page blocks found at all)
   if (!out.length && idml.offPageRects?.length) {
     const offMap = new Map();
     for (const r of idml.offPageRects) {
@@ -937,7 +1049,7 @@ function joinIdmlExcel(idml, excel) {
           if (!seen.has(s.sku)) { seen.add(s.sku); allSkus.push(s); }
       out.push({ block:{pageName:'',blockNumber:'–',
                         promoName:'(⚠ Full page - no individual blocks)', skus:allSkus},
-                 frames:[], isFullPage:true,
+                 frames:[], isFullPage:true, blockText:'',
                  bboxPt:{x:0, y:0, w:idml.pageWidth, h:idml.pageHeight} });
     }
   }
@@ -1153,6 +1265,7 @@ $id('btn-generate').addEventListener('click', async () => {
     ws.columns = [
       { header: 'PDF File',         key: 'pdf',   width: 32 },
       { header: 'Block Name',       key: 'name',  width: 44 },
+      { header: 'Block Text',       key: 'text',  width: 55 },
       { header: 'Block ID',         key: 'skus',  width: 60 },
       { header: 'Block Screenshot', key: 'img',   width: 28 },
     ];
@@ -1222,22 +1335,23 @@ $id('btn-generate').addEventListener('click', async () => {
           } catch(e) {
             log(`  ⚠ crop failed (block ${block.blockNumber}): ${e.message}`);
           }
-          blockMap.set(skuListRaw, { block, skuList, pdfNames: [pair.pdfName], cropCanvas });
+          blockMap.set(skuListRaw, { block, skuList, pdfNames: [pair.pdfName], cropCanvas, blockText: blk.blockText || '' });
         }
       }
     }
 
     // ── pass 2: write one row per unique block ────────────────────────────────
     let dataRow = 2, totalBlocks = 0;
-    for (const { block, skuList, pdfNames, cropCanvas } of blockMap.values()) {
+    for (const { block, skuList, pdfNames, cropCanvas, blockText } of blockMap.values()) {
       const promo = block.promoName || '';
 
       // Write row cells
       const row = ws.getRow(dataRow);
       row.getCell(1).value = pdfNames.join('\n');
       row.getCell(2).value = promo;
-      row.getCell(3).value = skuList;
-      for (let ci = 1; ci <= 3; ci++) {
+      row.getCell(3).value = blockText || '';
+      row.getCell(4).value = skuList;
+      for (let ci = 1; ci <= 4; ci++) {
         const cell = row.getCell(ci);
         cell.font      = { name:'Calibri', size:10 };
         cell.alignment = { horizontal:'left', vertical:'middle', wrapText:true };
@@ -1256,7 +1370,7 @@ $id('btn-generate').addEventListener('click', async () => {
         const imgW    = cropCanvas.width;
         const imgH    = cropCanvas.height;
         ws.addImage(imgId, {
-          tl: { col: 3, row: dataRow - 1 },  // 0-based
+          tl: { col: 4, row: dataRow - 1 },  // 0-based
           ext: { width: imgW, height: imgH },
         });
         row.height = imgH * 0.75 + 6;  // px → points
