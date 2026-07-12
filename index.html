@@ -1263,11 +1263,9 @@ $id('btn-generate').addEventListener('click', async () => {
     const ws = wb.addWorksheet('Flyer Blocks');
 
     ws.columns = [
-      { header: 'PDF File',         key: 'pdf',   width: 32 },
-      { header: 'Block Name',       key: 'name',  width: 44 },
-      { header: 'Block Text',       key: 'text',  width: 55 },
-      { header: 'Block ID',         key: 'skus',  width: 60 },
-      { header: 'Block Screenshot', key: 'img',   width: 28 },
+      { header: 'PDF File',  key: 'pdf',  width: 32 },
+      { header: 'Block Text', key: 'text', width: 55 },
+      { header: 'Block ID',  key: 'skus', width: 60 },
     ];
 
     // Style header row
@@ -1299,13 +1297,6 @@ $id('btn-generate').addEventListener('click', async () => {
       const joined = joinIdmlExcel(idml, excel);
       log(`  → ${joined.blocks.length} block(s), ${joined.unmatched.length} unmatched`);
 
-      let rendered = null;
-      try {
-        rendered = await renderPdfPage(pair.pdfBytes);
-      } catch(e) {
-        log(`  ⚠ PDF render failed: ${e.message}`);
-      }
-
       for (const blk of joined.blocks) {
         const block      = blk.block;
         const skuListRaw = block.skus.map(s => 'FD' + String(parseInt(s.sku, 10)).padStart(7, '0')).join(',');
@@ -1328,30 +1319,20 @@ $id('btn-generate').addEventListener('click', async () => {
           blockMap.get(skuListRaw).pdfNames.push(pair.pdfName);
           log(`  ↳ Merged duplicate into existing block (${block.promoName || skuListRaw.slice(0,30)})`);
         } else {
-          // First occurrence — capture screenshot from this PDF
-          let cropCanvas = null;
-          try {
-            if (rendered) cropCanvas = cropFromCanvas(rendered, blk.bboxPt, idml.pageWidth, idml.pageHeight);
-          } catch(e) {
-            log(`  ⚠ crop failed (block ${block.blockNumber}): ${e.message}`);
-          }
-          blockMap.set(skuListRaw, { block, skuList, pdfNames: [pair.pdfName], cropCanvas, blockText: blk.blockText || '' });
+          blockMap.set(skuListRaw, { block, skuList, pdfNames: [pair.pdfName], blockText: blk.blockText || '' });
         }
       }
     }
 
     // ── pass 2: write one row per unique block ────────────────────────────────
     let dataRow = 2, totalBlocks = 0;
-    for (const { block, skuList, pdfNames, cropCanvas, blockText } of blockMap.values()) {
-      const promo = block.promoName || '';
-
+    for (const { block, skuList, pdfNames, blockText } of blockMap.values()) {
       // Write row cells
       const row = ws.getRow(dataRow);
       row.getCell(1).value = pdfNames.join('\n');
-      row.getCell(2).value = promo;
-      row.getCell(3).value = blockText || '';
-      row.getCell(4).value = skuList;
-      for (let ci = 1; ci <= 4; ci++) {
+      row.getCell(2).value = blockText || block.promoName || '';
+      row.getCell(3).value = skuList;
+      for (let ci = 1; ci <= 3; ci++) {
         const cell = row.getCell(ci);
         cell.font      = { name:'Calibri', size:10 };
         cell.alignment = { horizontal:'left', vertical:'middle', wrapText:true };
@@ -1362,21 +1343,7 @@ $id('btn-generate').addEventListener('click', async () => {
           right: {style:'thin', color:{argb:'FFCCCCCC'}},
         };
       }
-
-      // Embed screenshot
-      if (cropCanvas) {
-        const base64  = canvasToBase64(cropCanvas);
-        const imgId   = wb.addImage({ base64, extension:'png' });
-        const imgW    = cropCanvas.width;
-        const imgH    = cropCanvas.height;
-        ws.addImage(imgId, {
-          tl: { col: 4, row: dataRow - 1 },  // 0-based
-          ext: { width: imgW, height: imgH },
-        });
-        row.height = imgH * 0.75 + 6;  // px → points
-      } else {
-        row.height = 60;
-      }
+      row.height = 30;
 
       dataRow++;
       totalBlocks++;
