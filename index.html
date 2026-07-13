@@ -345,6 +345,141 @@ body {
 
 /* ── Utility ───────────────────────────────────────────────────────────────── */
 .hidden { display: none !important; }
+
+/* ── SKU check progress bar ────────────────────────────────────────────────── */
+.sku-check-section { margin-top: 16px; padding-top: 14px; border-top: 1px solid #f0f0f0; }
+.sku-check-title { font-size: 11px; font-weight: 600; color: #9ca3af; text-transform: uppercase; letter-spacing: .07em; margin-bottom: 8px; }
+.progress-bar-track {
+  height: 9px;
+  background: #e5e7eb;
+  border-radius: 5px;
+  overflow: hidden;
+}
+.progress-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #003391, #1d4ed8);
+  border-radius: 5px;
+  width: 0%;
+  transition: width .25s ease;
+}
+.progress-bar-label {
+  font-size: 12px;
+  color: #6b7280;
+  margin-top: 7px;
+}
+
+/* ── Tabs ──────────────────────────────────────────────────────────────────── */
+.tab-nav {
+  display: flex;
+  gap: 4px;
+  padding: 0 20px;
+  max-width: 740px;
+  margin: 24px auto 0;
+}
+.tab-btn {
+  padding: 9px 20px;
+  font-size: 13px; font-weight: 600;
+  border: 1px solid #d1d5db;
+  border-bottom: none;
+  border-radius: 9px 9px 0 0;
+  background: #e5e7eb;
+  color: #6b7280;
+  cursor: pointer;
+  transition: background .12s, color .12s;
+  position: relative;
+  top: 1px;
+}
+.tab-btn:hover { background: #f3f4f6; color: #374151; }
+.tab-btn.active {
+  background: #f0f2f6;
+  color: #003391;
+  border-color: #d1d5db;
+  border-bottom-color: #f0f2f6;
+  z-index: 1;
+}
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+
+/* ── Decoder panel ─────────────────────────────────────────────────────────── */
+.decoder-card {
+  background: #fff;
+  border: 1px solid #e2e5ea;
+  border-radius: 14px;
+  padding: 28px 32px;
+  box-shadow: 0 1px 4px rgba(0,0,0,.06), 0 4px 16px rgba(0,0,0,.04);
+}
+.decoder-card h2 {
+  font-size: 15px; font-weight: 700; color: #111827;
+  margin-bottom: 6px;
+}
+.decoder-card p {
+  font-size: 13px; color: #6b7280; line-height: 1.5;
+  margin-bottom: 18px;
+}
+.decoder-textarea {
+  width: 100%;
+  height: 110px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 12px;
+  color: #111827;
+  resize: vertical;
+  outline: none;
+  transition: border-color .12s;
+  background: #fafafa;
+}
+.decoder-textarea:focus { border-color: #003391; background: #fff; box-shadow: 0 0 0 2px rgba(0,51,145,.1); }
+.decoder-results {
+  margin-top: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.decode-block {
+  border: 1px solid #e2e5ea;
+  border-radius: 10px;
+  overflow: hidden;
+}
+.decode-block-header {
+  background: #f3f5f8;
+  padding: 9px 14px;
+  font-size: 12px; font-weight: 600; color: #374151;
+  border-bottom: 1px solid #e2e5ea;
+  display: flex; align-items: center; gap: 8px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  word-break: break-all;
+}
+.decode-block-count {
+  margin-left: auto;
+  background: #003391; color: #fff;
+  border-radius: 20px; padding: 2px 9px;
+  font-size: 11px; font-weight: 600;
+  font-family: -apple-system, sans-serif;
+  flex-shrink: 0;
+}
+.decode-block-skus {
+  padding: 12px 14px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.sku-chip {
+  background: #eef2fb;
+  color: #1e3a7a;
+  border: 1px solid #c7d3ef;
+  border-radius: 6px;
+  padding: 3px 9px;
+  font-size: 12px; font-weight: 500;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+}
+.decode-error {
+  padding: 12px 14px;
+  color: #b91c1c;
+  font-size: 13px;
+  background: #fef2f2;
+}
 </style>
 </head>
 <body>
@@ -358,8 +493,17 @@ body {
   </div>
 </header>
 
+<!-- ── Tab nav ─────────────────────────────────────────────────────────────── -->
+<nav class="tab-nav">
+  <button class="tab-btn active" onclick="switchTab('export')">Export</button>
+  <button class="tab-btn" onclick="switchTab('decrypt')">Decrypt SKU List</button>
+</nav>
+
 <!-- ── Main ───────────────────────────────────────────────────────────────── -->
 <div class="page-content">
+
+<!-- ── Export tab ─────────────────────────────────────────────────────────── -->
+<div class="tab-panel active" id="tab-export">
   <div class="steps">
 
     <!-- ── Step 1 ── Upload ────────────────────────────────────────────────── -->
@@ -436,18 +580,47 @@ body {
         <div id="progress-wrap" class="progress-wrap hidden">
           <div class="log-label">Progress</div>
           <pre id="log"></pre>
+          <div id="sku-check-section" class="sku-check-section hidden">
+            <div class="sku-check-title">Checking SKUs with FD API</div>
+            <div class="progress-bar-track">
+              <div class="progress-bar-fill" id="sku-progress-fill"></div>
+            </div>
+            <div class="progress-bar-label" id="sku-progress-label"></div>
+          </div>
         </div>
 
-        <div id="download-wrap" class="download-wrap hidden">
+        <div id="download-wrap" class="download-wrap hidden" style="display:flex;flex-direction:column;gap:10px">
           <a id="btn-download" href="#" download class="btn-download">
             <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"/></svg>
-            Download
+            Download Tagging Sheet
+          </a>
+          <a id="btn-download-issues" href="#" download class="btn-download" style="background:#b91c1c;box-shadow:0 2px 8px rgba(185,28,28,.3)">
+            <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"/></svg>
+            Download Missing SKU Report
           </a>
         </div>
       </div>
     </div>
 
   </div><!-- /steps -->
+</div><!-- /tab-export -->
+
+<!-- ── Decrypt tab ─────────────────────────────────────────────────────────── -->
+<div class="tab-panel" id="tab-decrypt">
+  <div class="decoder-card">
+    <h2>Decrypt Block ID</h2>
+    <p>Paste one or more compressed Block IDs (one per line) to decode them back into their full FD SKU lists.</p>
+    <textarea class="decoder-textarea" id="decode-input" placeholder="AkZEBwykyCQECAICAgQCBgwCBg==&#10;AkZEBwiM+6oB6hcKBAae4QuGAhY="></textarea>
+    <div style="margin-top:12px">
+      <button class="btn-primary" onclick="runDecode()">
+        <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2"><path stroke-linecap="round" stroke-linejoin="round" d="M13.5 10.5 21 3m0 0h-6m6 0v6M10.5 13.5 3 21m0 0h6m-6 0v-6"/></svg>
+        Decrypt
+      </button>
+    </div>
+    <div class="decoder-results" id="decode-results"></div>
+  </div>
+</div><!-- /tab-decrypt -->
+
 </div><!-- /page-content -->
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
@@ -962,6 +1135,82 @@ function compressFdSkuList(inputString) {
   return btoa(binary);
 }
 
+// ── FD-SKU list decompression ─────────────────────────────────────────────────
+function decompressFdSkuList(b64) {
+  const data = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+  let i = 0;
+
+  function readVarint() {
+    let result = 0, shift = 0;
+    while (true) {
+      const byte = data[i++];
+      result |= (byte & 0x7F) << shift;
+      shift += 7;
+      if (!(byte & 0x80)) break;
+    }
+    return result >>> 0;
+  }
+
+  // Header
+  const prefixLen = data[i++];
+  let prefix = '';
+  for (let p = 0; p < prefixLen; p++) prefix += String.fromCharCode(data[i++]);
+  const width = data[i++];
+  const count = readVarint();
+
+  // Body
+  const nums = [];
+  if (count > 0) {
+    nums.push(readVarint());
+    for (let k = 1; k < count; k++) {
+      const z = readVarint();
+      const delta = (z & 1) ? -((z + 1) >> 1) : (z >> 1);
+      nums.push(nums[nums.length - 1] + delta);
+    }
+  }
+  return nums.map(n => prefix + String(n).padStart(width, '0'));
+}
+
+// ── Tab switching ─────────────────────────────────────────────────────────────
+function switchTab(name) {
+  document.querySelectorAll('.tab-btn').forEach((btn, i) => {
+    const names = ['export', 'decrypt'];
+    btn.classList.toggle('active', names[i] === name);
+  });
+  document.querySelectorAll('.tab-panel').forEach(p => {
+    p.classList.toggle('active', p.id === 'tab-' + name);
+  });
+}
+
+// ── SKU list decoder ──────────────────────────────────────────────────────────
+function runDecode() {
+  const lines = $id('decode-input').value.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  const container = $id('decode-results');
+  container.innerHTML = '';
+  if (!lines.length) return;
+
+  for (const b64 of lines) {
+    const block = document.createElement('div');
+    block.className = 'decode-block';
+    try {
+      const skus = decompressFdSkuList(b64);
+      block.innerHTML = `
+        <div class="decode-block-header">
+          ${b64}
+          <span class="decode-block-count">${skus.length} SKU${skus.length !== 1 ? 's' : ''}</span>
+        </div>
+        <div class="decode-block-skus">
+          ${skus.map(s => `<span class="sku-chip">${s}</span>`).join('')}
+        </div>`;
+    } catch(e) {
+      block.innerHTML = `
+        <div class="decode-block-header">${b64}</div>
+        <div class="decode-error">⚠ ${e.message}</div>`;
+    }
+    container.appendChild(block);
+  }
+}
+
 // ── Merge multiple Excel files into one combined lookup ────────────────────────
 // Accepts an array of ArrayBuffers or File/Blob objects.
 async function mergeExcels(sources) {
@@ -1115,6 +1364,123 @@ function cropFromCanvas(rendered, bboxPt, pageWidthPt, pageHeightPt) {
 
 function canvasToBase64(canvas) {
   return canvas.toDataURL('image/png').split(',')[1];
+}
+
+// ── FD product API ─────────────────────────────────────────────────────────────
+const PRODUCTS_API   = 'https://www.familydollar.com/ccstoreui/v1/products';
+const API_BATCH_SIZE = 25;
+
+// Converts internal zero-padded SKU to FD API format: "0599076" → "FD599076"
+function fdId(internalSku) { return 'FD' + String(parseInt(internalSku, 10)); }
+
+// Converts FD API SKU back to internal 7-digit: "FD599076" → "0599076"
+function fdToInternal(fdSku) { return fdSku.replace(/^FD/, '').padStart(7, '0'); }
+
+// Rate-limited fetch: guarantees >= 500 ms between calls (≤ 2/sec)
+let _nextAllowed = 0;
+async function rateFetch(url) {
+  const wait = Math.max(0, _nextAllowed - Date.now());
+  if (wait > 0) await new Promise(r => setTimeout(r, wait));
+  _nextAllowed = Date.now() + 1000;
+  return fetch(url, { credentials: 'omit' });
+}
+
+// Check a list of internal SKUs against the FD product API.
+// Returns array of { fdSku, productName, pdfNames, issue }.
+// skuToPdfNames : Map<internalSku → Set<pdfFilename>>
+// skuToExcelName: Map<internalSku → string>
+async function checkSkusAgainstApi(skuToPdfNames, skuToExcelName) {
+  const allSkus = [...skuToPdfNames.keys()];
+  const issues  = [];
+  const total   = allSkus.length;
+  let   checked = 0;
+
+  const fillEl  = $id('sku-progress-fill');
+  const labelEl = $id('sku-progress-label');
+  $id('sku-check-section').classList.remove('hidden');
+
+  function updateBar(msg) {
+    fillEl.style.width = (total ? (checked / total * 100) : 0) + '%';
+    labelEl.textContent = msg ?? `Checked ${checked} of ${total} SKUs…`;
+  }
+  updateBar(`Starting — ${total} SKUs to check…`);
+
+  for (let i = 0; i < allSkus.length; i += API_BATCH_SIZE) {
+    const batch = allSkus.slice(i, i + API_BATCH_SIZE);
+    const batchIssues = await processBatch(batch);
+    issues.push(...batchIssues);
+    checked = Math.min(i + API_BATCH_SIZE, total);
+    updateBar();
+  }
+
+  fillEl.style.width = '100%';
+  updateBar(`Done — ${issues.length} issue${issues.length !== 1 ? 's' : ''} found across ${total} SKUs.`);
+  return issues;
+
+  // ── inner: process one batch ────────────────────────────────────────────────
+  async function processBatch(skus) {
+    const localIssues = [];
+    const invalidSkus = new Set(); // FD-format IDs flagged as non-existent
+
+    // First attempt
+    const productItems = await tryFetch(skus, invalidSkus);
+
+    // Record non-existent SKUs
+    for (const fdSku of invalidSkus) {
+      const internalSku = fdToInternal(fdSku);
+      localIssues.push({
+        fdSku,
+        productName:  skuToExcelName.get(internalSku) || '',
+        pdfNames:     skuToPdfNames.get(internalSku)  || new Set(),
+        issue:        'Product does not exist',
+      });
+    }
+
+    // Check returned products for image / description issues
+    for (const item of productItems) {
+      const rawId = (item.id || item.repositoryId || '').replace(/^FD0*/, 'FD');
+      const m = rawId.match(/^FD(\d+)$/);
+      if (!m) continue;
+      const internalSku = m[1].padStart(7, '0');
+      const fdSku       = 'FD' + String(parseInt(m[1], 10));
+
+      const noImage = !item.primaryFullImageURL || item.primaryFullImageURL.includes('no-image');
+      if (!noImage) continue;
+      const issue = 'No product image';
+
+      localIssues.push({
+        fdSku,
+        productName: item.displayName || skuToExcelName.get(internalSku) || '',
+        pdfNames:    skuToPdfNames.get(internalSku) || new Set(),
+        issue,
+      });
+    }
+
+    return localIssues;
+  }
+
+  // ── inner: fetch one batch, rate-limited; retries after stripping bad SKUs ──
+  async function tryFetch(skus, invalidSkus) {
+    const res  = await rateFetch(`${PRODUCTS_API}?productIds=${skus.map(fdId).join(',')}`);
+    const json = await res.json().catch(() => ({}));
+
+    if (!res.ok || json.errors?.length) {
+      // Collect invalid SKU IDs from the error list
+      for (const err of (json.errors || [])) {
+        const bad = (err.moreInfo || '').trim();
+        if (bad) invalidSkus.add(bad);
+      }
+      // Retry without the bad SKUs
+      const badInternal = new Set([...invalidSkus].map(fdToInternal));
+      const validSkus   = skus.filter(s => !badInternal.has(s));
+      if (!validSkus.length) return [];
+      const res2  = await rateFetch(`${PRODUCTS_API}?productIds=${validSkus.map(fdId).join(',')}`);
+      const json2 = await res2.json().catch(() => ({}));
+      return json2?.items || [];
+    }
+
+    return json?.items || [];
+  }
 }
 
 // ── main ───────────────────────────────────────────────────────────────────────
@@ -1324,6 +1690,17 @@ $id('btn-generate').addEventListener('click', async () => {
       }
     }
 
+    // ── collect SKU → PDF mapping for API check ──────────────────────────────
+    const skuToPdfNames  = new Map(); // internalSku → Set<pdfName>
+    const skuToExcelName = new Map(); // internalSku → product name from Excel
+    for (const { block, pdfNames } of blockMap.values()) {
+      for (const { sku, name } of block.skus) {
+        if (!skuToPdfNames.has(sku)) skuToPdfNames.set(sku, new Set());
+        for (const pdf of pdfNames) skuToPdfNames.get(sku).add(pdf);
+        if (!skuToExcelName.has(sku)) skuToExcelName.set(sku, name);
+      }
+    }
+
     // ── pass 2: write one row per unique block ────────────────────────────────
     let dataRow = 2, totalBlocks = 0;
     for (const { block, skuList, pdfNames, blockText } of blockMap.values()) {
@@ -1349,6 +1726,72 @@ $id('btn-generate').addEventListener('click', async () => {
       totalBlocks++;
     }
 
+    // ── SKU API check → "Missing SKU Info" sheet ─────────────────────────────
+    log(`\nChecking ${skuToPdfNames.size} unique SKU(s) against FD product API…`);
+    _nextAllowed = 0; // reset rate limiter
+    const skuIssues = await checkSkusAgainstApi(skuToPdfNames, skuToExcelName);
+    log(`  → ${skuIssues.length} issue(s) found`);
+
+    // ── Build separate "Missing SKU Info" workbook ───────────────────────────
+    const wbMissing  = new ExcelJS.Workbook();
+    const wsMissing  = wbMissing.addWorksheet('Missing SKU Info');
+    wsMissing.columns = [
+      { header: 'SKU',          key: 'sku',   width: 16 },
+      { header: 'Product Name', key: 'name',  width: 48 },
+      { header: 'PDF File',     key: 'pdf',   width: 38 },
+      { header: 'Issue',        key: 'issue', width: 36 },
+    ];
+    const missingHeader = wsMissing.getRow(1);
+    missingHeader.height = 20;
+    missingHeader.eachCell(cell => {
+      cell.fill      = { type:'pattern', pattern:'solid', fgColor:{ argb:'FFB91C1C' } };
+      cell.font      = { bold:true, color:{ argb:'FFFFFFFF' }, name:'Calibri' };
+      cell.alignment = { horizontal:'center', vertical:'middle' };
+    });
+
+    // Sort: non-existent first, then no-image, then by SKU
+    const ISSUE_ORDER = { 'Product does not exist': 0, 'No product image': 1 };
+    skuIssues.sort((a, b) => (ISSUE_ORDER[a.issue] ?? 9) - (ISSUE_ORDER[b.issue] ?? 9) || a.fdSku.localeCompare(b.fdSku));
+
+    let missingRow = 2;
+    for (const { fdSku, productName, pdfNames, issue } of skuIssues) {
+      const row = wsMissing.getRow(missingRow++);
+      row.getCell(1).value = fdSku;
+      row.getCell(2).value = productName;
+      row.getCell(3).value = [...pdfNames].join('\n');
+      row.getCell(4).value = issue;
+      for (let ci = 1; ci <= 4; ci++) {
+        const cell = row.getCell(ci);
+        cell.font      = { name:'Calibri', size:10 };
+        cell.alignment = { horizontal:'left', vertical:'middle', wrapText:true };
+        cell.border    = {
+          top:   {style:'thin', color:{argb:'FFCCCCCC'}},
+          bottom:{style:'thin', color:{argb:'FFCCCCCC'}},
+          left:  {style:'thin', color:{argb:'FFCCCCCC'}},
+          right: {style:'thin', color:{argb:'FFCCCCCC'}},
+        };
+        if (issue === 'Product does not exist') {
+          cell.fill = { type:'pattern', pattern:'solid', fgColor:{ argb:'FFFFF1F0' } };
+        }
+      }
+      row.height = 24;
+    }
+
+    if (skuIssues.length === 0) {
+      const row = wsMissing.getRow(2);
+      row.getCell(1).value = '✓ No issues found — all SKUs exist and have product images.';
+      row.getCell(1).font  = { name:'Calibri', size:10, italic:true, color:{ argb:'FF6b7280' } };
+      wsMissing.mergeCells('A2:D2');
+    }
+
+    const missingName   = masterZip.name.replace(/\.zip$/i, '') + '_missing_skus.xlsx';
+    const missingBuffer = await wbMissing.xlsx.writeBuffer();
+    const missingBlob   = new Blob([missingBuffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const dlIssues      = $id('btn-download-issues');
+    dlIssues.href       = URL.createObjectURL(missingBlob);
+    dlIssues.download   = missingName;
+    dlIssues.innerHTML  = `<svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"/></svg> Download Missing SKU Report (${skuIssues.length} issue${skuIssues.length !== 1 ? 's' : ''})`;
+
     // ── save and offer download ───────────────────────────────────────────────
     log(`\nWriting ${totalBlocks} unique block(s) (deduplicated from ${filteredPairs.length} PDF(s))…`);
     const buffer = await wb.xlsx.writeBuffer();
@@ -1359,7 +1802,7 @@ $id('btn-generate').addEventListener('click', async () => {
     const dl  = $id('btn-download');
     dl.href     = url;
     dl.download = outName;
-    dl.innerHTML = `<svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"/></svg> Download ${outName}`;
+    dl.innerHTML = `<svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"/></svg> Download Tagging Sheet (${totalBlocks} blocks)`;
     $id('download-wrap').classList.remove('hidden');
     log(`Done — ${totalBlocks} block(s) exported.`);
 
