@@ -1027,14 +1027,15 @@ async function parseIdml(file) {
       const imageFilenames = [];
       const textBoxTexts  = {};
 
-      for (const child of el.children) {
+      // Walk ALL descendant XMLElements (not just direct children) so that
+      // Image/TextBox nodes wrapped in CharacterStyleRange/ParagraphStyleRange
+      // are still found (some IDMLs nest them; others don't).
+      for (const child of el.getElementsByTagName('XMLElement')) {
         const cTag  = child.tagName.split('}').pop();
         const cmt   = (child.getAttribute('MarkupTag') || '').replace('XMLTag/', '');
         const cSelf = child.getAttribute('Self') || '';
 
-        if (cTag === 'XMLAttribute' && child.getAttribute('Name') === 'SKU') {
-          bsSku = child.getAttribute('Value') || '';
-        } else if (cmt.startsWith('Image')) {
+        if (cmt.startsWith('Image')) {
           for (const attr of child.children) {
             if (attr.tagName.split('}').pop() === 'XMLAttribute' &&
                 attr.getAttribute('Name') === 'href') {
@@ -1045,6 +1046,13 @@ async function parseIdml(file) {
         } else if (cmt.startsWith('TextBox')) {
           const text = storyTextMap[cSelf] || '';
           if (text) textBoxTexts[cmt] = text;
+        }
+      }
+      // SKU attribute is a direct XMLAttribute child of the ItemPosition element
+      for (const child of el.children) {
+        if (child.tagName.split('}').pop() === 'XMLAttribute' &&
+            child.getAttribute('Name') === 'SKU') {
+          bsSku = child.getAttribute('Value') || '';
         }
       }
 
