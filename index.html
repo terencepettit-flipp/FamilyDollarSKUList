@@ -1237,14 +1237,18 @@ async function mergeExcels(sources) {
   // Build skuToBlock: skip rows with no block number (generic product lists),
   // and process smaller blocks first so specific brand deals win over catch-all
   // blocks that contain the same SKUs.
-  const skuToBlock = {};
+  const skuToBlock = {}, promoToBlock = {};
   const namedBlocks = allBlocks
     .filter(b => b.blockNumber != null && String(b.blockNumber).trim() !== '')
     .sort((a, b) => a.skus.length - b.skus.length);
   for (const b of namedBlocks) {
     for (const s of b.skus) if (!skuToBlock[s.sku]) skuToBlock[s.sku] = b;
+    if (b.promoName) {
+      const key = b.promoName.trim().toLowerCase();
+      if (!promoToBlock[key]) promoToBlock[key] = b;
+    }
   }
-  return { blocks: allBlocks, skuToBlock };
+  return { blocks: allBlocks, skuToBlock, promoToBlock };
 }
 
 // ── Join ───────────────────────────────────────────────────────────────────────
@@ -1262,6 +1266,20 @@ function joinIdmlExcel(idml, excel) {
       // Collect Rectangles and SKUs for this ItemPosition's images
       const frames = [];
       let block = null;
+
+      // 1. Match by bsSku → promoName (most reliable: the IDML SKU attribute
+      //    contains the promo name verbatim, matching the Excel's Promo/Group Name).
+      if (ip.bsSku && excel.promoToBlock) {
+        const norm = ip.bsSku.replace(/\s+\d+\s*$/, '').trim().toLowerCase();
+        block = excel.promoToBlock[norm];
+        if (!block) {
+          for (const [k, b] of Object.entries(excel.promoToBlock)) {
+            if (norm.startsWith(k) || k.startsWith(norm)) { block = b; break; }
+          }
+        }
+      }
+
+      // 2. Fall back to image filename → SKU → block
       for (const fname of ip.imageFilenames) {
         const r = rectByFilename.get(fname);
         if (r) frames.push(r);
@@ -1270,6 +1288,7 @@ function joinIdmlExcel(idml, excel) {
           if (m) block = excel.skuToBlock[m[1].padStart(7, '0')];
         }
       }
+
       if (!block || !frames.length) {
         if (frames.length) unmatched.push({ ...frames[0], reason: 'SKU not in Excel', bsSku: ip.bsSku });
         continue;
