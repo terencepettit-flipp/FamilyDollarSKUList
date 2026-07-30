@@ -572,6 +572,13 @@ body {
       <div class="step-card">
         <h2>Generate</h2>
 
+        <div class="option-row" style="margin-bottom:14px">
+          <label class="option-label">
+            <input type="checkbox" id="chk-missing-sku-report" checked>
+            Also generate Missing SKU Report (calls FD product API)
+          </label>
+        </div>
+
         <button id="btn-generate" class="btn-primary" disabled>
           <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"/></svg>
           Generate Excel Tagging Sheet
@@ -594,7 +601,7 @@ body {
             <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"/></svg>
             Download Tagging Sheet
           </a>
-          <a id="btn-download-issues" href="#" download class="btn-download" style="background:#b91c1c;box-shadow:0 2px 8px rgba(185,28,28,.3)">
+          <a id="btn-download-issues" href="#" download class="btn-download" style="background:#b91c1c;box-shadow:0 2px 8px rgba(185,28,28,.3);display:none">
             <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"/></svg>
             Download Missing SKU Report
           </a>
@@ -1222,13 +1229,20 @@ function runDecode() {
 // ── Merge multiple Excel files into one combined lookup ────────────────────────
 // Accepts an array of ArrayBuffers or File/Blob objects.
 async function mergeExcels(sources) {
-  const allBlocks = [], skuToBlock = {};
+  const allBlocks = [];
   for (const src of sources) {
     const { blocks } = await parseExcel(src);
-    for (const b of blocks) {
-      allBlocks.push(b);
-      for (const s of b.skus) if (!skuToBlock[s.sku]) skuToBlock[s.sku] = b;
-    }
+    for (const b of blocks) allBlocks.push(b);
+  }
+  // Build skuToBlock: skip rows with no block number (generic product lists),
+  // and process smaller blocks first so specific brand deals win over catch-all
+  // blocks that contain the same SKUs.
+  const skuToBlock = {};
+  const namedBlocks = allBlocks
+    .filter(b => b.blockNumber != null && String(b.blockNumber).trim() !== '')
+    .sort((a, b) => a.skus.length - b.skus.length);
+  for (const b of namedBlocks) {
+    for (const s of b.skus) if (!skuToBlock[s.sku]) skuToBlock[s.sku] = b;
   }
   return { blocks: allBlocks, skuToBlock };
 }
@@ -1734,71 +1748,77 @@ $id('btn-generate').addEventListener('click', async () => {
       totalBlocks++;
     }
 
-    // ── SKU API check → "Missing SKU Info" sheet ─────────────────────────────
-    log(`\nChecking ${skuToPdfNames.size} unique SKU(s) against FD product API…`);
-    _nextAllowed = 0; // reset rate limiter
-    const skuIssues = await checkSkusAgainstApi(skuToPdfNames, skuToExcelName);
-    log(`  → ${skuIssues.length} issue(s) found`);
+    // ── SKU API check → "Missing SKU Info" workbook (optional) ──────────────
+    const doSkuReport = $id('chk-missing-sku-report').checked;
+    const dlIssues    = $id('btn-download-issues');
+    dlIssues.style.display = 'none';
 
-    // ── Build separate "Missing SKU Info" workbook ───────────────────────────
-    const wbMissing  = new ExcelJS.Workbook();
-    const wsMissing  = wbMissing.addWorksheet('Missing SKU Info');
-    wsMissing.columns = [
-      { header: 'SKU',          key: 'sku',   width: 16 },
-      { header: 'Product Name', key: 'name',  width: 48 },
-      { header: 'PDF File',     key: 'pdf',   width: 38 },
-      { header: 'Issue',        key: 'issue', width: 36 },
-    ];
-    const missingHeader = wsMissing.getRow(1);
-    missingHeader.height = 20;
-    missingHeader.eachCell(cell => {
-      cell.fill      = { type:'pattern', pattern:'solid', fgColor:{ argb:'FFB91C1C' } };
-      cell.font      = { bold:true, color:{ argb:'FFFFFFFF' }, name:'Calibri' };
-      cell.alignment = { horizontal:'center', vertical:'middle' };
-    });
+    if (doSkuReport) {
+      log(`\nChecking ${skuToPdfNames.size} unique SKU(s) against FD product API…`);
+      _nextAllowed = 0; // reset rate limiter
+      const skuIssues = await checkSkusAgainstApi(skuToPdfNames, skuToExcelName);
+      log(`  → ${skuIssues.length} issue(s) found`);
 
-    // Sort: non-existent first, then no-image, then by SKU
-    const ISSUE_ORDER = { 'Product does not exist': 0, 'No product image': 1 };
-    skuIssues.sort((a, b) => (ISSUE_ORDER[a.issue] ?? 9) - (ISSUE_ORDER[b.issue] ?? 9) || a.fdSku.localeCompare(b.fdSku));
+      // ── Build separate "Missing SKU Info" workbook ─────────────────────────
+      const wbMissing  = new ExcelJS.Workbook();
+      const wsMissing  = wbMissing.addWorksheet('Missing SKU Info');
+      wsMissing.columns = [
+        { header: 'SKU',          key: 'sku',   width: 16 },
+        { header: 'Product Name', key: 'name',  width: 48 },
+        { header: 'PDF File',     key: 'pdf',   width: 38 },
+        { header: 'Issue',        key: 'issue', width: 36 },
+      ];
+      const missingHeader = wsMissing.getRow(1);
+      missingHeader.height = 20;
+      missingHeader.eachCell(cell => {
+        cell.fill      = { type:'pattern', pattern:'solid', fgColor:{ argb:'FFB91C1C' } };
+        cell.font      = { bold:true, color:{ argb:'FFFFFFFF' }, name:'Calibri' };
+        cell.alignment = { horizontal:'center', vertical:'middle' };
+      });
 
-    let missingRow = 2;
-    for (const { fdSku, productName, pdfNames, issue } of skuIssues) {
-      const row = wsMissing.getRow(missingRow++);
-      row.getCell(1).value = fdSku;
-      row.getCell(2).value = productName;
-      row.getCell(3).value = [...pdfNames].join('\n');
-      row.getCell(4).value = issue;
-      for (let ci = 1; ci <= 4; ci++) {
-        const cell = row.getCell(ci);
-        cell.font      = { name:'Calibri', size:10 };
-        cell.alignment = { horizontal:'left', vertical:'middle', wrapText:true };
-        cell.border    = {
-          top:   {style:'thin', color:{argb:'FFCCCCCC'}},
-          bottom:{style:'thin', color:{argb:'FFCCCCCC'}},
-          left:  {style:'thin', color:{argb:'FFCCCCCC'}},
-          right: {style:'thin', color:{argb:'FFCCCCCC'}},
-        };
-        if (issue === 'Product does not exist') {
-          cell.fill = { type:'pattern', pattern:'solid', fgColor:{ argb:'FFFFF1F0' } };
+      // Sort: non-existent first, then no-image, then by SKU
+      const ISSUE_ORDER = { 'Product does not exist': 0, 'No product image': 1 };
+      skuIssues.sort((a, b) => (ISSUE_ORDER[a.issue] ?? 9) - (ISSUE_ORDER[b.issue] ?? 9) || a.fdSku.localeCompare(b.fdSku));
+
+      let missingRow = 2;
+      for (const { fdSku, productName, pdfNames, issue } of skuIssues) {
+        const row = wsMissing.getRow(missingRow++);
+        row.getCell(1).value = fdSku;
+        row.getCell(2).value = productName;
+        row.getCell(3).value = [...pdfNames].join('\n');
+        row.getCell(4).value = issue;
+        for (let ci = 1; ci <= 4; ci++) {
+          const cell = row.getCell(ci);
+          cell.font      = { name:'Calibri', size:10 };
+          cell.alignment = { horizontal:'left', vertical:'middle', wrapText:true };
+          cell.border    = {
+            top:   {style:'thin', color:{argb:'FFCCCCCC'}},
+            bottom:{style:'thin', color:{argb:'FFCCCCCC'}},
+            left:  {style:'thin', color:{argb:'FFCCCCCC'}},
+            right: {style:'thin', color:{argb:'FFCCCCCC'}},
+          };
+          if (issue === 'Product does not exist') {
+            cell.fill = { type:'pattern', pattern:'solid', fgColor:{ argb:'FFFFF1F0' } };
+          }
         }
+        row.height = 24;
       }
-      row.height = 24;
-    }
 
-    if (skuIssues.length === 0) {
-      const row = wsMissing.getRow(2);
-      row.getCell(1).value = '✓ No issues found — all SKUs exist and have product images.';
-      row.getCell(1).font  = { name:'Calibri', size:10, italic:true, color:{ argb:'FF6b7280' } };
-      wsMissing.mergeCells('A2:D2');
-    }
+      if (skuIssues.length === 0) {
+        const row = wsMissing.getRow(2);
+        row.getCell(1).value = '✓ No issues found — all SKUs exist and have product images.';
+        row.getCell(1).font  = { name:'Calibri', size:10, italic:true, color:{ argb:'FF6b7280' } };
+        wsMissing.mergeCells('A2:D2');
+      }
 
-    const missingName   = masterZip.name.replace(/\.zip$/i, '') + '_missing_skus.xlsx';
-    const missingBuffer = await wbMissing.xlsx.writeBuffer();
-    const missingBlob   = new Blob([missingBuffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-    const dlIssues      = $id('btn-download-issues');
-    dlIssues.href       = URL.createObjectURL(missingBlob);
-    dlIssues.download   = missingName;
-    dlIssues.innerHTML  = `<svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"/></svg> Download Missing SKU Report (${skuIssues.length} issue${skuIssues.length !== 1 ? 's' : ''})`;
+      const missingName   = masterZip.name.replace(/\.zip$/i, '') + '_missing_skus.xlsx';
+      const missingBuffer = await wbMissing.xlsx.writeBuffer();
+      const missingBlob   = new Blob([missingBuffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      dlIssues.href          = URL.createObjectURL(missingBlob);
+      dlIssues.download      = missingName;
+      dlIssues.innerHTML     = `<svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"/></svg> Download Missing SKU Report (${skuIssues.length} issue${skuIssues.length !== 1 ? 's' : ''})`;
+      dlIssues.style.display = 'flex';
+    }
 
     // ── save and offer download ───────────────────────────────────────────────
     log(`\nWriting ${totalBlocks} unique block(s) (deduplicated from ${filteredPairs.length} PDF(s))…`);
