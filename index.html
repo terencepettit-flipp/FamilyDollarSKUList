@@ -1778,56 +1778,162 @@ $id('btn-generate').addEventListener('click', async () => {
       const skuIssues = await checkSkusAgainstApi(skuToPdfNames, skuToExcelName);
       log(`  → ${skuIssues.length} issue(s) found`);
 
-      // ── Build separate "Missing SKU Info" workbook ─────────────────────────
+      // ── Build "Missing SKU Report" workbook — Tab 1: Block Summary, Tab 2: SKU Details ──
+      const ISSUE_ORDER = { 'Product does not exist': 0, 'No product image': 1 };
       const wbMissing  = new ExcelJS.Workbook();
-      const wsMissing  = wbMissing.addWorksheet('Missing SKU Info');
-      wsMissing.columns = [
-        { header: 'SKU',          key: 'sku',   width: 16 },
-        { header: 'Product Name', key: 'name',  width: 48 },
-        { header: 'PDF File',     key: 'pdf',   width: 38 },
-        { header: 'Issue',        key: 'issue', width: 36 },
+      const wsSummary  = wbMissing.addWorksheet('Block Summary');
+      const wsDetails  = wbMissing.addWorksheet('SKU Details');
+
+      // Helper: "P07 · 15" style label
+      const blockRef = b => {
+        const page = b.pageName ? `P${String(b.pageName).padStart(2,'0')}` : '?';
+        const num  = b.blockNumber != null
+          ? String(parseFloat(b.blockNumber) === Math.floor(parseFloat(b.blockNumber))
+              ? Math.floor(parseFloat(b.blockNumber)) : b.blockNumber)
+          : '?';
+        return `${page} · ${num}`;
+      };
+
+      // Reverse-map fdSku → blockMap key (for linking issues back to blocks)
+      const fdSkuToKey = new Map();
+      for (const [key, entry] of blockMap.entries()) {
+        for (const { sku } of entry.block.skus) {
+          const fd = 'FD' + String(parseInt(sku, 10));
+          if (!fdSkuToKey.has(fd)) fdSkuToKey.set(fd, key);
+        }
+      }
+
+      // Group skuIssues by block
+      const issuesByBlock = new Map();
+      for (const iss of skuIssues) {
+        const key = fdSkuToKey.get(iss.fdSku);
+        if (key == null) continue;
+        if (!issuesByBlock.has(key)) issuesByBlock.set(key, []);
+        issuesByBlock.get(key).push(iss);
+      }
+
+      // ── TAB 1: Block Summary ──────────────────────────────────────────────
+      wsSummary.columns = [
+        { header: 'Block',                  key: 'blk',     width: 10 },
+        { header: 'Promo Name',             key: 'promo',   width: 54 },
+        { header: 'PDF(s)',                 key: 'pdf',     width: 36 },
+        { header: 'Total SKUs',             key: 'total',   width: 12 },
+        { header: 'No product image',       key: 'noimg',   width: 18 },
+        { header: 'Product does not exist', key: 'noexist', width: 22 },
+        { header: 'Total issues',           key: 'issues',  width: 14 },
+        { header: '% of Block',             key: 'pct',     width: 12 },
       ];
-      const missingHeader = wsMissing.getRow(1);
-      missingHeader.height = 20;
-      missingHeader.eachCell(cell => {
-        cell.fill      = { type:'pattern', pattern:'solid', fgColor:{ argb:'FFB91C1C' } };
-        cell.font      = { bold:true, color:{ argb:'FFFFFFFF' }, name:'Calibri' };
-        cell.alignment = { horizontal:'center', vertical:'middle' };
+      const summaryHdr = wsSummary.getRow(1);
+      summaryHdr.height = 20;
+      summaryHdr.eachCell(cell => {
+        cell.fill      = { type:'pattern', pattern:'solid', fgColor:{ argb:'FF1E40AF' } };
+        cell.font      = { name:'Calibri', size:10, bold:true, color:{ argb:'FFFFFFFF' } };
+        cell.alignment = { vertical:'middle' };
       });
 
-      // Sort: non-existent first, then no-image, then by SKU
-      const ISSUE_ORDER = { 'Product does not exist': 0, 'No product image': 1 };
-      skuIssues.sort((a, b) => (ISSUE_ORDER[a.issue] ?? 9) - (ISSUE_ORDER[b.issue] ?? 9) || a.fdSku.localeCompare(b.fdSku));
+      // Build + sort block summaries: by % desc, then block ref
+      const blockSummaries = [...blockMap.entries()].map(([key, entry]) => {
+        const issues   = issuesByBlock.get(key) || [];
+        const total    = entry.block.skus.length;
+        const noImg    = issues.filter(i => i.issue === 'No product image').length;
+        const noExist  = issues.filter(i => i.issue === 'Product does not exist').length;
+        const issCount = issues.length;
+        const pct      = total > 0 ? issCount / total : 0;
+        return { key, entry, issues, total, noImg, noExist, issCount, pct };
+      }).sort((a, b) => {
+        if (b.pct !== a.pct) return b.pct - a.pct;
+        return blockRef(a.entry.block).localeCompare(blockRef(b.entry.block), undefined, { numeric: true });
+      });
 
-      let missingRow = 2;
-      for (const { fdSku, productName, pdfNames, issue } of skuIssues) {
-        const row = wsMissing.getRow(missingRow++);
-        row.getCell(1).value = fdSku;
-        row.getCell(2).value = productName;
-        row.getCell(3).value = [...pdfNames].join('\n');
-        row.getCell(4).value = issue;
-        for (let ci = 1; ci <= 4; ci++) {
+      let sumRowIdx = 2;
+      for (const { entry, total, noImg, noExist, issCount, pct } of blockSummaries) {
+        const { block, pdfNames } = entry;
+        const row = wsSummary.getRow(sumRowIdx++);
+        row.getCell(1).value = blockRef(block);
+        row.getCell(2).value = block.promoName || '';
+        row.getCell(3).value = [...new Set(pdfNames)].join('\n');
+        row.getCell(4).value = total;
+        row.getCell(5).value = noImg   || 0;
+        row.getCell(6).value = noExist || 0;
+        row.getCell(7).value = issCount;
+        row.getCell(8).value = pct;
+        row.getCell(8).numFmt = '0%';
+        // Colour-code % cell by severity
+        if (pct > 0.1) {
+          row.getCell(8).fill = { type:'pattern', pattern:'solid', fgColor:{ argb:'FFFEE2E2' } };
+          row.getCell(8).font = { name:'Calibri', size:10, bold:true, color:{ argb:'FF991B1B' } };
+        } else if (pct > 0) {
+          row.getCell(8).fill = { type:'pattern', pattern:'solid', fgColor:{ argb:'FFFEF3C7' } };
+          row.getCell(8).font = { name:'Calibri', size:10, bold:true, color:{ argb:'FF92400E' } };
+        }
+        for (let ci = 1; ci <= 8; ci++) {
+          const cell = row.getCell(ci);
+          if (!cell.font) cell.font = {};
+          cell.font.name = cell.font.name || 'Calibri';
+          cell.font.size = cell.font.size || 10;
+          cell.alignment = { vertical:'top', wrapText: ci === 3 };
+        }
+        row.height = 24;
+      }
+
+      // ── TAB 2: SKU Details ────────────────────────────────────────────────
+      wsDetails.columns = [
+        { header: 'Block',        key: 'blk',   width: 10 },
+        { header: 'Promo Name',   key: 'promo',  width: 46 },
+        { header: 'FD SKU',       key: 'sku',    width: 14 },
+        { header: 'Product Name', key: 'name',   width: 44 },
+        { header: 'PDF File(s)',  key: 'pdf',    width: 36 },
+        { header: 'Issue',        key: 'issue',  width: 28 },
+      ];
+      const detailsHdr = wsDetails.getRow(1);
+      detailsHdr.height = 20;
+      detailsHdr.eachCell(cell => {
+        cell.fill      = { type:'pattern', pattern:'solid', fgColor:{ argb:'FFB91C1C' } };
+        cell.font      = { name:'Calibri', size:10, bold:true, color:{ argb:'FFFFFFFF' } };
+        cell.alignment = { vertical:'middle' };
+      });
+
+      const augmentedIssues = skuIssues.map(iss => {
+        const key   = fdSkuToKey.get(iss.fdSku);
+        const entry = key != null ? blockMap.get(key) : null;
+        return { ...iss, block: entry?.block || null };
+      }).sort((a, b) => {
+        const ra = a.block ? blockRef(a.block) : 'zzz';
+        const rb = b.block ? blockRef(b.block) : 'zzz';
+        if (ra !== rb) return ra.localeCompare(rb, undefined, { numeric: true });
+        return ((ISSUE_ORDER[a.issue]??9) - (ISSUE_ORDER[b.issue]??9)) || a.fdSku.localeCompare(b.fdSku);
+      });
+
+      let detRowIdx = 2;
+      for (const { fdSku, productName, pdfNames, issue, block } of augmentedIssues) {
+        const row = wsDetails.getRow(detRowIdx++);
+        row.getCell(1).value = block ? blockRef(block) : '';
+        row.getCell(2).value = block?.promoName || '';
+        row.getCell(3).value = fdSku;
+        row.getCell(4).value = productName;
+        row.getCell(5).value = [...pdfNames].join('\n');
+        row.getCell(6).value = issue;
+        for (let ci = 1; ci <= 6; ci++) {
           const cell = row.getCell(ci);
           cell.font      = { name:'Calibri', size:10 };
-          cell.alignment = { horizontal:'left', vertical:'middle', wrapText:true };
+          cell.alignment = { vertical:'top', wrapText: ci === 5 };
           cell.border    = {
             top:   {style:'thin', color:{argb:'FFCCCCCC'}},
             bottom:{style:'thin', color:{argb:'FFCCCCCC'}},
             left:  {style:'thin', color:{argb:'FFCCCCCC'}},
             right: {style:'thin', color:{argb:'FFCCCCCC'}},
           };
-          if (issue === 'Product does not exist') {
+          if (issue === 'Product does not exist')
             cell.fill = { type:'pattern', pattern:'solid', fgColor:{ argb:'FFFFF1F0' } };
-          }
         }
         row.height = 24;
       }
 
       if (skuIssues.length === 0) {
-        const row = wsMissing.getRow(2);
+        const row = wsDetails.getRow(2);
         row.getCell(1).value = '✓ No issues found — all SKUs exist and have product images.';
         row.getCell(1).font  = { name:'Calibri', size:10, italic:true, color:{ argb:'FF6b7280' } };
-        wsMissing.mergeCells('A2:D2');
+        wsDetails.mergeCells('A2:F2');
       }
 
       const missingName   = masterZip.name.replace(/\.zip$/i, '') + '_missing_skus.xlsx';
